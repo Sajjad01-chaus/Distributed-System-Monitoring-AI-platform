@@ -1,0 +1,25 @@
+myvenv
+/myvenv
+.env
+
+# 2. API Keys & Secrets
+.env
+config.yaml
+
+# 3. Python Cache & Logs
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+
+# 4. Project-Specific Artifacts
+# We don't want to push large datasets, models, or generated files
+/data/*
+/models/*
+/api/*
+/plots/*
+
+# 5. IDE Files
+# Common files from editors like VSCode
+.vscode/
+.idea/
