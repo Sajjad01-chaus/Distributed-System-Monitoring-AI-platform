@@ -1,9 +1,0 @@
-fastapi
-uvicorn[standard]
-sqlalchemy
-psycopg2-binary
-databases
-scikit-learn
-pandas
-numpy
-joblib
