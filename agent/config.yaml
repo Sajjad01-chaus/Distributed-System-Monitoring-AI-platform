@@ -1,0 +1,6 @@
+agent_id: "My-Workstation"
+server_url: "ws://localhost:8000"
+collection_interval: 10
+critical_services: []
+connectivity_test_hosts: ['8.8.8.8', '1.1.1.1']
+allow_custom_scripts: false
