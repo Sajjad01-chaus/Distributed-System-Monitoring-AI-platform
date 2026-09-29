@@ -9,7 +9,9 @@ class Agent(Base):
     hostname = Column(String(255))
     platform = Column(String(50))
     status = Column(String(20), default="offline")
-    last_seen = Column(DateTime(timezone=True), onupdate=func.now())
+    # When telemetry was last received; set only by the persist worker. (No onupdate: any other
+    # UPDATE of the row, e.g. marking it offline, must not look like fresh data.)
+    last_seen = Column(DateTime(timezone=True))
     first_connected = Column(DateTime(timezone=True), server_default=func.now())
 
 class AgentLog(Base):

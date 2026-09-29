@@ -5,6 +5,7 @@ import json
 import logging
 import platform
 import os
+import random
 import sys
 import time
 import uuid
@@ -71,13 +72,23 @@ class SystemMonitorAgent:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         
+        backoff = 1.0
         while self.running:
+            started = time.monotonic()
             try:
                 await self.connect_and_monitor()
             except Exception as e:
                 self.logger.error(f"Agent error: {e}")
-                self.logger.info("Retrying connection in 30 seconds...")
-                await asyncio.sleep(30)
+            if not self.running:
+                break
+            if time.monotonic() - started > 30:
+                backoff = 1.0   # the connection was healthy for a while: start over
+            # Exponential backoff with jitter: a fleet whose replica died spreads its
+            # reconnects out instead of stampeding the survivors.
+            delay = backoff * random.uniform(0.5, 1.5)
+            self.logger.info(f"Reconnecting in {delay:.1f}s")
+            await asyncio.sleep(delay)
+            backoff = min(backoff * 2, 60.0)
 
     async def connect_and_monitor(self):
         """Connect to server and start monitoring"""
@@ -88,14 +99,18 @@ class SystemMonitorAgent:
                 self.websocket = websocket
                 self.logger.info(f"Connected to server: {self.server_url}")
                 
-                # Start monitoring tasks
+                # Whichever loop ends first (usually: server closed the socket, e.g. 1012 when a
+                # replica drains) ends the connection, so we reconnect now rather than on the
+                # next send attempt up to one collection interval later.
                 tasks = [
                     asyncio.create_task(self.collect_and_send_metrics()),
                     asyncio.create_task(self.handle_server_commands())
                 ]
-                
-                await asyncio.gather(*tasks)
-                
+                _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                self.websocket = None
+
         except websockets.exceptions.ConnectionClosed:
             self.logger.warning("Connection to server lost")
         except Exception as e:
@@ -257,9 +272,9 @@ class SystemMonitorAgent:
             if command_type == 'restart':
                 await self.restart_agent()
             elif command_type == 'remediate':
-                await self.execute_remediation(command.get('issue_type'))
+                await self.execute_remediation(command.get('issue_type'), command.get('command_id'))
             elif command_type == 'update_config':
-                await self.update_config(command.get('config'))
+                await self.update_config(command.get('config'), command.get('command_id'))
             elif command_type == 'throttle':
                 # Server backlog is above its limit: back off instead of piling on.
                 retry = float(command.get('retry_after_s', 5))
@@ -275,7 +290,7 @@ class SystemMonitorAgent:
         except Exception as e:
             self.logger.error(f"Error processing command: {e}")
 
-    async def execute_remediation(self, issue_type: str):
+    async def execute_remediation(self, issue_type: str, command_id: str | None = None):
         """Execute auto-remediation for specific issue"""
         try:
             self.logger.info(f"Executing remediation for: {issue_type}")
@@ -288,12 +303,14 @@ class SystemMonitorAgent:
 
             action = remediation_map.get(issue_type)
             if action is None:
+                # Still answer, so the command completes (as a failure) instead of hanging.
                 self.logger.warning(f"No remediation action for issue: {issue_type}")
-                return
-
-            result = await action()
+                result = {'success': False, 'reason': f'no allowlisted action for {issue_type!r}'}
+            else:
+                result = await action()
             await self.websocket.send(json.dumps({
                 'type': 'remediation_result',
+                'command_id': command_id,
                 'issue_type': issue_type,
                 'dry_run': self.remediation_dry_run,
                 'success': result.get('success', False),
@@ -318,7 +335,7 @@ class SystemMonitorAgent:
             return {'success': True, 'would_clean': 'temp files older than 1 day'}
         return await self.filesystem_collector.cleanup_temp_files()
 
-    async def update_config(self, new_config: Dict[str, Any]):
+    async def update_config(self, new_config: Dict[str, Any], command_id: str | None = None):
         """Update agent configuration.
 
         Only tuning keys may be changed remotely; safety settings such as
@@ -337,6 +354,7 @@ class SystemMonitorAgent:
             # Send confirmation
             await self.websocket.send(json.dumps({
                 'type': 'config_updated',
+                'command_id': command_id,
                 'applied': sorted(accepted),
                 'rejected': rejected,
                 'timestamp': datetime.now(timezone.utc).isoformat()

@@ -99,3 +99,17 @@ async def enqueue(redis: aioredis.Redis, agent_id: str, raw: str) -> str:
 
 async def publish(redis: aioredis.Redis, event: Dict[str, Any]) -> None:
     await redis.publish(config.DASHBOARD_CHANNEL, json.dumps(event, default=str))
+
+
+async def group_backlog(redis: aioredis.Redis, group: str) -> int:
+    """Entries the group hasn't finished: never delivered (lag) + delivered but unacked (pending).
+    Redis reports lag as null only after XDEL of unread entries, which this system never does;
+    pending alone is the fallback then."""
+    try:
+        groups = await redis.xinfo_groups(config.TELEMETRY_STREAM)
+    except aioredis.ResponseError:
+        return 0   # stream not created yet
+    for g in groups:
+        if g["name"] == group:
+            return (g.get("lag") or 0) + (g.get("pending") or 0)
+    return 0

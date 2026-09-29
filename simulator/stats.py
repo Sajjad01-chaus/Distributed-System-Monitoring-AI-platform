@@ -38,6 +38,15 @@ class StageStats:
     flaps: int = 0
     throttled: int = 0              # server asked us to back off (admission control)
     server_errors: int = 0          # server rejected a message as invalid
+    reconnect_gap_s: List[float] = field(default_factory=list)   # disconnected -> connected again
+    commands_received: int = 0      # commands delivered to a simulated agent
+
+    # Commands issued through the API (routed across replicas)
+    commands_issued: int = 0
+    command_status: Counter = field(default_factory=Counter)      # HTTP status -> count
+    command_ack_s: List[float] = field(default_factory=list)      # POST -> 202 (routed + delivered)
+    command_complete_s: List[float] = field(default_factory=list)  # POST -> agent result on dashboard
+    pending_commands: Dict[str, float] = field(default_factory=dict)
     connected_agents: set = field(default_factory=set)
     sender_lag_s: List[float] = field(default_factory=list)   # scheduled vs actual send time
     generator_loop_lag_s: List[float] = field(default_factory=list)  # the simulator's own event-loop delay

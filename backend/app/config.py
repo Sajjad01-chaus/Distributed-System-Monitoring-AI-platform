@@ -34,3 +34,12 @@ DETECT_WINDOW = _int("DETECT_WINDOW", 30)
 DETECT_CLEAR_AFTER = _int("DETECT_CLEAR_AFTER", 5)
 
 CONSUMER_NAME = os.getenv("CONSUMER_NAME", f"{socket.gethostname()}-{os.getpid()}")
+# Identity of this API replica for presence/command routing.
+REPLICA_ID = os.getenv("REPLICA_ID", CONSUMER_NAME)
+
+# Control plane
+PRESENCE_TTL_S = _int("PRESENCE_TTL_S", 90)          # 3x the default agent interval
+AGENT_STALE_S = _int("AGENT_STALE_S", 90)            # no data this long -> offline
+LIVENESS_SWEEP_S = _int("LIVENESS_SWEEP_S", 10)
+LIVENESS_MAX_LAG = _int("LIVENESS_MAX_LAG", 5_000)   # don't blame agents for our own backlog
+LEADER_LEASE_MS = _int("LEADER_LEASE_MS", 15_000)

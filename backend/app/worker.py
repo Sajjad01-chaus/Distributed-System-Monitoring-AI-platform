@@ -1,4 +1,4 @@
-"""Worker entrypoint: `python -m app.worker persist|detect`.
+"""Worker entrypoint: `python -m app.worker persist|detect|liveness`.
 
 Run as many of each as needed; members of a consumer group share the stream's entries.
 SIGTERM finishes the in-flight batch before exiting; anything unacked is re-claimed by a
@@ -9,11 +9,12 @@ import logging
 import signal
 import sys
 
+from app.liveness import LivenessMonitor
 from app.pipeline import streams
 from app.pipeline.detect import DetectConsumer
 from app.pipeline.persist import PersistConsumer
 
-CONSUMERS = {"persist": PersistConsumer, "detect": DetectConsumer}
+CONSUMERS = {"persist": PersistConsumer, "detect": DetectConsumer, "liveness": LivenessMonitor}
 
 
 async def main(kind: str) -> None:
@@ -27,7 +28,8 @@ async def main(kind: str) -> None:
             pass
     try:
         await consumer.run()
-        await consumer.retire()
+        if hasattr(consumer, "retire"):
+            await consumer.retire()
     finally:
         await redis.aclose()
 

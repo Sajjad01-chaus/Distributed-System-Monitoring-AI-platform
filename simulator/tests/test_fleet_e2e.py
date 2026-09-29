@@ -45,22 +45,26 @@ def backend(tmp_path_factory):
            "WORKER_BLOCK_MS": "200"}
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_DIR, env=env, check=True)
 
-    port = _free_port()
+    ports = [_free_port(), _free_port()]   # two API replicas, like two containers behind the LB
     procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
-                               "--port", str(port), "--log-level", "warning"], cwd=BACKEND_DIR, env=env)]
+                               "--port", str(port), "--log-level", "warning"], cwd=BACKEND_DIR,
+                              env={**env, "REPLICA_ID": f"replica-{i}"})
+             for i, port in enumerate(ports)]
     procs += [subprocess.Popen([sys.executable, "-m", "app.worker", kind], cwd=BACKEND_DIR, env=env)
               for kind in ("persist", "detect")]
     try:
         deadline = time.time() + 60
-        while True:
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=1)
-                break
-            except OSError as err:
-                if time.time() > deadline or any(p.poll() is not None for p in procs):
-                    raise RuntimeError("backend did not start") from err
-                time.sleep(0.5)
-        yield f"ws://127.0.0.1:{port}", db_url
+        for port in ports:
+            while True:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=1)
+                    break
+                except OSError as err:
+                    if time.time() > deadline or any(p.poll() is not None for p in procs):
+                        raise RuntimeError("backend did not start") from err
+                    time.sleep(0.5)
+        yield {"url": f"ws://127.0.0.1:{ports[0]}", "other_replica": f"http://127.0.0.1:{ports[1]}",
+               "db_url": db_url}
     finally:
         for p in procs:
             p.terminate()
@@ -71,7 +75,7 @@ def backend(tmp_path_factory):
 
 
 def test_small_fleet_is_fully_delivered_and_persisted(backend):
-    url, db_url = backend
+    url, db_url = backend["url"], backend["db_url"]
     [stage] = fleet.main(["--url", url, "--agents", "5", "--interval", "0.5", "--duration", "3",
                           "--ramp-up", "0.5", "--drain", "3", "--mix", "normal=1",
                           "--database-url", db_url, "--run-prefix", "t"])
@@ -87,7 +91,7 @@ def test_small_fleet_is_fully_delivered_and_persisted(backend):
 
 
 def test_duplicates_are_persisted_once(backend):
-    url, db_url = backend
+    url, db_url = backend["url"], backend["db_url"]
     [stage] = fleet.main(["--url", url, "--agents", "5", "--interval", "0.5", "--duration", "3",
                           "--ramp-up", "0.5", "--drain", "3", "--mix", "duplicates=1",
                           "--database-url", db_url, "--run-prefix", "d"])
@@ -95,3 +99,15 @@ def test_duplicates_are_persisted_once(backend):
     assert stage["duplicates_sent"] > 0
     assert stage["persisted_rows"] == stage["sent_unique"] < stage["sent_frames"]
     assert stage["duplicates_delivered"] == 0
+
+
+def test_commands_issued_on_another_replica_reach_agents(backend):
+    [stage] = fleet.main(["--url", backend["url"], "--api-url", backend["other_replica"],
+                          "--agents", "5", "--interval", "0.5", "--duration", "4", "--ramp-up", "0.5",
+                          "--drain", "3", "--mix", "normal=1", "--commands-per-s", "5", "--run-prefix", "c"])
+
+    cmds = stage["commands"]
+    assert cmds["issued"] >= 10
+    assert cmds["by_http_status"] == {"202": cmds["issued"]}, "every command routed and delivered"
+    assert cmds["received_by_agents"] == cmds["issued"]
+    assert cmds["completed"] == cmds["issued"], "every result made it back to the dashboard"
