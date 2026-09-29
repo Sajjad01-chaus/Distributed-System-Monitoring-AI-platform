@@ -58,5 +58,5 @@ def test_small_fleet_is_fully_delivered_and_persisted(backend):
     assert stage["e2e_latency_ms"]["p50"] is not None
     assert stage["agents_connected"] == 5
     assert stage["connect_failures"] == 0 and stage["disconnects"] == 0
-    assert not stage["generator_saturated"]
+    assert not stage["generator_saturated"] and not stage["stall_detected"]
     assert stage["api_probe_errors"] == 0

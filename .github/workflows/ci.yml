@@ -24,9 +24,33 @@ jobs:
       - name: Tests
         run: pytest -q
 
-  docker-build:
+  compose-smoke:
+    # Full stack on real Postgres/Timescale + a small synthetic fleet, sized well under the
+    # Phase 1 capacity ceiling (~3 msg/s) so it checks correctness, not throughput. Unit tests use SQLite,
+    # so this is what catches driver/config/startup problems (e.g. a DB URL the image can't load).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build backend image
-        run: docker build -t dsm-backend:ci backend
+      - name: Configure secrets for CI
+        run: echo "POSTGRES_PASSWORD=ci-$(openssl rand -hex 12)" > .env
+      - name: Start stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Run synthetic fleet
+        run: >
+          docker compose --profile loadtest run --rm --no-deps fleet
+          --agents 5 --interval 5 --duration 30 --ramp-up 2 --drain 20 --mix normal=1
+          --run-prefix ci --report /reports/ci-smoke.json
+      - name: Assert delivery and persistence
+        run: |
+          python3 - <<'PY'
+          import json
+          s = json.load(open("docs/benchmarks/ci-smoke.json"))["stages"][0]
+          print(json.dumps({k: s[k] for k in ("agents_connected", "sent_unique", "delivery_ratio", "persisted_rows")}))
+          assert s["agents_connected"] == 5, s
+          assert s["sent_unique"] > 0 and s["delivery_ratio"] == 1.0, s
+          assert s["persisted_rows"] == s["sent_unique"], s
+          assert not s["stall_detected"], s
+          PY
+      - name: Backend logs
+        if: always()
+        run: docker compose logs backend --tail 100

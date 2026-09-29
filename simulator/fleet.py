@@ -18,6 +18,7 @@ import json
 import os
 import platform
 import random
+import secrets
 import sys
 import time
 import urllib.request
@@ -199,10 +200,11 @@ def count_persisted(database_url: str, run_id: str) -> Optional[int]:
 
 # --- stage orchestration ------------------------------------------------------------
 async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
-    run_id = f"{args.run_prefix}{stage_idx}n{n_agents}"
+    # Random suffix: reusing a --run-prefix must never merge two runs' rows in the persisted count.
+    run_id = f"{args.run_prefix}{secrets.token_hex(3)}s{stage_idx}n{n_agents}"
     master = random.Random(f"{args.seed}:{n_agents}")
     scenarios = assign_scenarios(n_agents, parse_mix(args.mix), master)
-    hosts = [SyntheticHost(f"sim-{run_id}-{i:05d}", scenarios[i], random.Random(f"{args.seed}:{run_id}:{i}"))
+    hosts = [SyntheticHost(f"sim-{run_id}-{i:05d}", scenarios[i], random.Random(f"{args.seed}:{n_agents}:{i}"))
              for i in range(n_agents)]
 
     cooldown_s = await wait_until_idle(args)
@@ -218,12 +220,15 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
     monitor = asyncio.create_task(run_loop_monitor(stats, done))
 
     started = time.time()
+    started_mono = time.monotonic()
     agents = [asyncio.create_task(run_agent(h, args, run_id, stats, stop,
                                             start_delay=args.ramp_up * i / max(1, n_agents)))
               for i, h in enumerate(hosts)]
     await asyncio.sleep(args.ramp_up + args.duration)
     stop.set()
     send_window = time.time() - started
+    # Wall clock jumping ahead of the monotonic clock means the machine/VM was suspended mid-stage.
+    clock_skew = send_window - (time.monotonic() - started_mono)
     await asyncio.wait(agents, timeout=15)
     for t in agents:
         t.cancel()
@@ -270,6 +275,12 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
         "pre_stage_cooldown_s": round(cooldown_s, 1),
         # A busy generator loop (>50 ms p99) means the harness, not the backend, may be the limit.
         "generator_saturated": bool(gen_lag["p99"] and gen_lag["p99"] > 50),
+        # A freeze (host sleep, VM pause, stopped process) invalidates the stage's numbers. Small
+        # proportional skew is normal VM clock drift (~5% observed under Docker Desktop), so the
+        # wall/monotonic check only trips on gaps well beyond that.
+        "clock_skew_s": round(clock_skew, 1),
+        "stall_detected": bool(abs(clock_skew) > max(15.0, 0.1 * send_window)
+                               or (gen_lag["max"] or 0) > 5000),
     }
     return result
 
@@ -284,7 +295,7 @@ def print_table(results: List[Dict[str, Any]]) -> None:
     rows = []
     for r in results:
         row = [str(r[k]) for _, k in cols] + [str(r[k][s]) for _, k, s in lat]
-        row.append("no" if r["generator_saturated"] else "yes")
+        row.append("STALL" if r["stall_detected"] else "no" if r["generator_saturated"] else "yes")
         rows.append(row)
     widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(header)]
     print("  ".join(h.rjust(w) for h, w in zip(header, widths)))
@@ -307,8 +318,7 @@ def parse_args(argv=None):
     p.add_argument("--database-url", default=os.getenv("SIM_DATABASE_URL"),
                    help="optional; if set, counts rows actually persisted per stage")
     p.add_argument("--report", help="write JSON results here")
-    p.add_argument("--run-prefix", default=f"r{int(time.time()) % 1_000_000}s",
-                   help="prefix making agent ids unique per invocation")
+    p.add_argument("--run-prefix", default="r", help="label prefixed to generated run ids")
     return p.parse_args(argv)
 
 

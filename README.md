@@ -65,18 +65,24 @@ delivery, persisted rows and API responsiveness while the backend is under load.
 cd simulator
 pip install -r requirements.txt
 python fleet.py --agents 25,50,100,200 --interval 10 --duration 60 \
-    --database-url postgresql://monitor_user:<password>@localhost:5432/system_monitor \
+    --database-url postgresql+psycopg2://monitor_user:<password>@localhost:5432/system_monitor \
     --report ../docs/benchmarks/my-run.json
 ```
 
-Methodology and results: [`docs/benchmarks/`](docs/benchmarks/).
+Or run it inside the compose network: `docker compose --profile loadtest run --rm fleet --agents 25,50,100`.
+Methodology: [`docs/benchmarks/methodology.md`](docs/benchmarks/methodology.md).
+
+**Phase 1 baseline** ([full results](docs/benchmarks/phase1-baseline.md)): the single-process backend
+tops out at **~8 msg/s** (~240 hosts at a 30 s interval). The AI engine refits a model on every message
+on the event loop, so `/health` p99 reaches 2–5 s under load, most of a 400-agent fleet can't even
+connect, duplicates are stored, and only 1 of 81 leaking hosts is detected.
 
 ## Known limitations
 
 These are deliberate starting points for the roadmap — each will be fixed and measured, not hidden:
 
 - **Ingestion is synchronous and single-process.** Each telemetry message does a blocking DB write and
-  an ML pass (including an Isolation Forest re-fit) inside the WebSocket receive loop.
+  an ML pass (including an Isolation Forest re-fit, ~133 ms) inside the WebSocket receive loop.
 - **AI engine state is global.** One shared history window mixes data from all agents.
 - **WebSocket connections live in process memory**, so the API cannot run as more than one replica.
 - **No authentication** on REST/WebSocket endpoints; CORS allows `*`.
@@ -88,7 +94,7 @@ These are deliberate starting points for the roadmap — each will be fixed and 
 | Phase | Focus | Outcome |
 |---|---|---|
 | 0 ✅ | Repo cleanup, working agent, config via env, tests + CI | Reproducible baseline |
-| 1 | Synthetic agent fleet (1k+ agents, failure scenarios) + load harness | Baseline throughput/latency numbers |
+| 1 ✅ | Synthetic agent fleet (failure scenarios) + load harness | [Baseline](docs/benchmarks/phase1-baseline.md): ~8 msg/s ceiling |
 | 2 | Ingestion pipeline: Redis Streams, consumer-group workers, idempotency, DLQ, async DB, Timescale hypertables, Alembic | Backpressure & delivery guarantees |
 | 3 | Scale-out: Nginx LB, N API replicas, Redis pub/sub WebSocket fan-out, heartbeat liveness | Horizontal scaling |
 | 4 | Security: JWT + RBAC, per-agent credentials, signed expiring commands, rate limiting, audit log | Secure control plane |
