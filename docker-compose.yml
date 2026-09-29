@@ -35,16 +35,36 @@ services:
       dockerfile: Dockerfile
     container_name: system_monitor_api
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-system_monitor}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-system_monitor}
       REDIS_URL: redis://redis:6379
     ports:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  # Load generator; only runs on demand:
+  #   docker compose --profile loadtest run --rm fleet --agents 25,50,100 --report /reports/run.json
+  fleet:
+    profiles: ["loadtest"]
+    build:
+      context: ./simulator
+    environment:
+      SIM_URL: ws://backend:8000
+      SIM_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-system_monitor}
+    volumes:
+      - ./docs/benchmarks:/reports
+    depends_on:
+      backend:
         condition: service_healthy
 
 volumes:

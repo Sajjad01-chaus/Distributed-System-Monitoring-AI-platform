@@ -1,0 +1,504 @@
+{
+  "generated_at": "2026-09-29T07:42:18Z",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "cpu_count": 12
+  },
+  "args": {
+    "url": "ws://backend:8000",
+    "agents": "25,50,100,200,400",
+    "interval": 10.0,
+    "duration": 60.0,
+    "ramp_up": 10.0,
+    "drain": 30.0,
+    "cooldown": 180,
+    "mix": null,
+    "seed": "42",
+    "report": "/reports/phase1-baseline-run1.json",
+    "run_prefix": "p1r1"
+  },
+  "stages": [
+    {
+      "run_id": "p1r12cf816s0n25",
+      "agents": 25,
+      "interval_s": 10.0,
+      "target_msgs_per_s": 2.5,
+      "send_window_s": 74.0,
+      "sent_unique": 178,
+      "sent_frames": 179,
+      "achieved_send_rate": 2.4,
+      "delivered_unique": 178,
+      "delivered_rate": 2.4,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 1,
+      "duplicates_delivered": 1,
+      "reordered": 1,
+      "persisted_rows": 179,
+      "e2e_latency_ms": {
+        "count": 178,
+        "p50": 120.8,
+        "p95": 304.9,
+        "p99": 2105.0,
+        "max": 13181.3
+      },
+      "api_probe_ms": {
+        "count": 109,
+        "p50": 3.1,
+        "p95": 117.9,
+        "p99": 158.2,
+        "max": 385.5
+      },
+      "api_probe_errors": 0,
+      "send_call_ms": {
+        "count": 179,
+        "p50": 0.3,
+        "p95": 0.5,
+        "p99": 0.8,
+        "max": 0.9
+      },
+      "sender_lag_ms": {
+        "count": 178,
+        "p50": 0.7,
+        "p95": 1.5,
+        "p99": 2.1,
+        "max": 2.1
+      },
+      "generator_loop_lag_ms": {
+        "count": 1098,
+        "p50": 0.4,
+        "p95": 1.3,
+        "p99": 2.1,
+        "max": 3.2
+      },
+      "agents_connected": 25,
+      "connects": 28,
+      "connect_failures": 0,
+      "disconnects": 0,
+      "flaps": 3,
+      "anomalies": {
+        "network_anomaly": 10,
+        "system_anomaly": 11,
+        "cpu_threshold_breach": 1
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 1,
+            "detected": 1,
+            "recall": 1.0
+          },
+          "memory_leak": {
+            "hosts": 1,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "disk_fill": {
+            "hosts": 1,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "network_degradation": {
+            "hosts": 1,
+            "detected": 0,
+            "recall": 0.0
+          }
+        },
+        "healthy_hosts": 21,
+        "healthy_flagged": 7,
+        "false_positive_rate": 0.333
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "generator_saturated": false,
+      "clock_skew_s": 4.0,
+      "stall_detected": false
+    },
+    {
+      "run_id": "p1r1e3eef7s1n50",
+      "agents": 50,
+      "interval_s": 10.0,
+      "target_msgs_per_s": 5.0,
+      "send_window_s": 73.5,
+      "sent_unique": 356,
+      "sent_frames": 361,
+      "achieved_send_rate": 4.8,
+      "delivered_unique": 356,
+      "delivered_rate": 4.8,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 5,
+      "duplicates_delivered": 5,
+      "reordered": 1,
+      "persisted_rows": 361,
+      "e2e_latency_ms": {
+        "count": 356,
+        "p50": 151.6,
+        "p95": 528.5,
+        "p99": 752.6,
+        "max": 12695.6
+      },
+      "api_probe_ms": {
+        "count": 100,
+        "p50": 3.3,
+        "p95": 477.3,
+        "p99": 628.5,
+        "max": 1048.2
+      },
+      "api_probe_errors": 0,
+      "send_call_ms": {
+        "count": 361,
+        "p50": 0.3,
+        "p95": 0.4,
+        "p99": 0.5,
+        "max": 0.8
+      },
+      "sender_lag_ms": {
+        "count": 356,
+        "p50": 0.7,
+        "p95": 1.8,
+        "p99": 2.1,
+        "max": 2.2
+      },
+      "generator_loop_lag_ms": {
+        "count": 1092,
+        "p50": 0.5,
+        "p95": 1.6,
+        "p99": 2.1,
+        "max": 2.2
+      },
+      "agents_connected": 50,
+      "connects": 57,
+      "connect_failures": 0,
+      "disconnects": 0,
+      "flaps": 7,
+      "anomalies": {
+        "network_anomaly": 27,
+        "system_anomaly": 39,
+        "cpu_threshold_breach": 5
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 3,
+            "detected": 1,
+            "recall": 0.333
+          },
+          "memory_leak": {
+            "hosts": 3,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "disk_fill": {
+            "hosts": 2,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "network_degradation": {
+            "hosts": 2,
+            "detected": 0,
+            "recall": 0.0
+          }
+        },
+        "healthy_hosts": 40,
+        "healthy_flagged": 16,
+        "false_positive_rate": 0.4
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "generator_saturated": false,
+      "clock_skew_s": 3.5,
+      "stall_detected": false
+    },
+    {
+      "run_id": "p1r135bed6s2n100",
+      "agents": 100,
+      "interval_s": 10.0,
+      "target_msgs_per_s": 10.0,
+      "send_window_s": 75.4,
+      "sent_unique": 596,
+      "sent_frames": 602,
+      "achieved_send_rate": 7.9,
+      "delivered_unique": 596,
+      "delivered_rate": 7.9,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 6,
+      "duplicates_delivered": 6,
+      "reordered": 2,
+      "persisted_rows": 602,
+      "e2e_latency_ms": {
+        "count": 596,
+        "p50": 4076.2,
+        "p95": 8957.9,
+        "p99": 10445.8,
+        "max": 17560.8
+      },
+      "api_probe_ms": {
+        "count": 40,
+        "p50": 3.2,
+        "p95": 800.2,
+        "p99": 2215.4,
+        "max": 2215.4
+      },
+      "api_probe_errors": 6,
+      "send_call_ms": {
+        "count": 602,
+        "p50": 0.3,
+        "p95": 0.4,
+        "p99": 0.6,
+        "max": 0.9
+      },
+      "sender_lag_ms": {
+        "count": 596,
+        "p50": 0.7,
+        "p95": 1.9,
+        "p99": 2.2,
+        "max": 2.2
+      },
+      "generator_loop_lag_ms": {
+        "count": 1097,
+        "p50": 0.5,
+        "p95": 1.6,
+        "p99": 2.1,
+        "max": 14.5
+      },
+      "agents_connected": 88,
+      "connects": 89,
+      "connect_failures": 71,
+      "disconnects": 0,
+      "flaps": 3,
+      "anomalies": {
+        "network_anomaly": 36,
+        "system_anomaly": 55,
+        "memory_leak_pattern": 1
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 5,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "memory_leak": {
+            "hosts": 6,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "disk_fill": {
+            "hosts": 4,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "network_degradation": {
+            "hosts": 3,
+            "detected": 0,
+            "recall": 0.0
+          }
+        },
+        "healthy_hosts": 70,
+        "healthy_flagged": 23,
+        "false_positive_rate": 0.329
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "generator_saturated": false,
+      "clock_skew_s": 5.4,
+      "stall_detected": false
+    },
+    {
+      "run_id": "p1r146ae09s3n200",
+      "agents": 200,
+      "interval_s": 10.0,
+      "target_msgs_per_s": 20.0,
+      "send_window_s": 75.5,
+      "sent_unique": 537,
+      "sent_frames": 544,
+      "achieved_send_rate": 7.1,
+      "delivered_unique": 537,
+      "delivered_rate": 7.1,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 7,
+      "duplicates_delivered": 7,
+      "reordered": 2,
+      "persisted_rows": 544,
+      "e2e_latency_ms": {
+        "count": 537,
+        "p50": 710.5,
+        "p95": 1573.1,
+        "p99": 2011.1,
+        "max": 10569.7
+      },
+      "api_probe_ms": {
+        "count": 42,
+        "p50": 3.0,
+        "p95": 4.2,
+        "p99": 2004.1,
+        "max": 2004.1
+      },
+      "api_probe_errors": 6,
+      "send_call_ms": {
+        "count": 544,
+        "p50": 0.2,
+        "p95": 0.4,
+        "p99": 0.5,
+        "max": 0.7
+      },
+      "sender_lag_ms": {
+        "count": 538,
+        "p50": 0.6,
+        "p95": 1.7,
+        "p99": 2.1,
+        "max": 2.2
+      },
+      "generator_loop_lag_ms": {
+        "count": 1101,
+        "p50": 0.6,
+        "p95": 1.5,
+        "p99": 2.1,
+        "max": 2.4
+      },
+      "agents_connected": 114,
+      "connects": 117,
+      "connect_failures": 614,
+      "disconnects": 0,
+      "flaps": 4,
+      "anomalies": {
+        "system_anomaly": 53,
+        "network_anomaly": 40,
+        "cpu_threshold_breach": 18,
+        "cpu_trend_anomaly": 2
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 10,
+            "detected": 5,
+            "recall": 0.5
+          },
+          "memory_leak": {
+            "hosts": 8,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "disk_fill": {
+            "hosts": 6,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "network_degradation": {
+            "hosts": 4,
+            "detected": 0,
+            "recall": 0.0
+          }
+        },
+        "healthy_hosts": 86,
+        "healthy_flagged": 24,
+        "false_positive_rate": 0.279
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "generator_saturated": false,
+      "clock_skew_s": 5.5,
+      "stall_detected": false
+    },
+    {
+      "run_id": "p1r18ad9b8s4n400",
+      "agents": 400,
+      "interval_s": 10.0,
+      "target_msgs_per_s": 40.0,
+      "send_window_s": 73.6,
+      "sent_unique": 542,
+      "sent_frames": 546,
+      "achieved_send_rate": 7.4,
+      "delivered_unique": 542,
+      "delivered_rate": 7.4,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 4,
+      "duplicates_delivered": 4,
+      "reordered": 1,
+      "persisted_rows": 546,
+      "e2e_latency_ms": {
+        "count": 542,
+        "p50": 747.7,
+        "p95": 2045.9,
+        "p99": 3428.0,
+        "max": 13436.0
+      },
+      "api_probe_ms": {
+        "count": 40,
+        "p50": 3.2,
+        "p95": 4.9,
+        "p99": 4786.8,
+        "max": 4786.8
+      },
+      "api_probe_errors": 6,
+      "send_call_ms": {
+        "count": 546,
+        "p50": 0.2,
+        "p95": 0.4,
+        "p99": 0.6,
+        "max": 0.9
+      },
+      "sender_lag_ms": {
+        "count": 543,
+        "p50": 0.7,
+        "p95": 1.8,
+        "p99": 2.2,
+        "max": 63.5
+      },
+      "generator_loop_lag_ms": {
+        "count": 1142,
+        "p50": 0.6,
+        "p95": 1.6,
+        "p99": 2.1,
+        "max": 76.9
+      },
+      "agents_connected": 170,
+      "connects": 170,
+      "connect_failures": 1642,
+      "disconnects": 0,
+      "flaps": 3,
+      "anomalies": {
+        "network_anomaly": 38,
+        "system_anomaly": 57,
+        "cpu_threshold_breach": 3
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 7,
+            "detected": 1,
+            "recall": 0.143
+          },
+          "memory_leak": {
+            "hosts": 10,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "disk_fill": {
+            "hosts": 7,
+            "detected": 0,
+            "recall": 0.0
+          },
+          "network_degradation": {
+            "hosts": 7,
+            "detected": 0,
+            "recall": 0.0
+          }
+        },
+        "healthy_hosts": 139,
+        "healthy_flagged": 29,
+        "false_positive_rate": 0.209
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "generator_saturated": false,
+      "clock_skew_s": 3.6,
+      "stall_detected": false
+    }
+  ]
+}
