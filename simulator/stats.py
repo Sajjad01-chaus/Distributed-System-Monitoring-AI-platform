@@ -47,6 +47,7 @@ class StageStats:
     command_ack_s: List[float] = field(default_factory=list)      # POST -> 202 (routed + delivered)
     command_complete_s: List[float] = field(default_factory=list)  # POST -> agent result on dashboard
     pending_commands: Dict[str, float] = field(default_factory=dict)
+    early_results: Dict[str, float] = field(default_factory=dict)   # result seen before the POST returned
     connected_agents: set = field(default_factory=set)
     sender_lag_s: List[float] = field(default_factory=list)   # scheduled vs actual send time
     generator_loop_lag_s: List[float] = field(default_factory=list)  # the simulator's own event-loop delay

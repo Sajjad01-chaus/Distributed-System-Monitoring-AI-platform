@@ -42,7 +42,8 @@ def backend(tmp_path_factory):
     tag = uuid.uuid4().hex[:8]  # private streams/channel: safe to run against a shared Redis
     env = {**os.environ, "DATABASE_URL": db_url, "REDIS_URL": REDIS_URL,
            "TELEMETRY_STREAM": f"e2e-{tag}", "DLQ_STREAM": f"e2e-{tag}:dlq", "DASHBOARD_CHANNEL": f"e2e-{tag}",
-           "WORKER_BLOCK_MS": "200"}
+           "WORKER_BLOCK_MS": "200", "JWT_SECRET": "e2e-" + "s" * 40,
+           "ADMIN_USERNAME": "admin", "ADMIN_PASSWORD": "e2e-admin-pw"}
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_DIR, env=env, check=True)
 
     ports = [_free_port(), _free_port()]   # two API replicas, like two containers behind the LB
@@ -104,10 +105,47 @@ def test_duplicates_are_persisted_once(backend):
 def test_commands_issued_on_another_replica_reach_agents(backend):
     [stage] = fleet.main(["--url", backend["url"], "--api-url", backend["other_replica"],
                           "--agents", "5", "--interval", "0.5", "--duration", "4", "--ramp-up", "0.5",
-                          "--drain", "3", "--mix", "normal=1", "--commands-per-s", "5", "--run-prefix", "c"])
+                          "--drain", "3", "--mix", "normal=1", "--commands-per-s", "5", "--run-prefix", "c",
+                          "--auth", "admin:e2e-admin-pw"])
 
     cmds = stage["commands"]
     assert cmds["issued"] >= 10
     assert cmds["by_http_status"] == {"202": cmds["issued"]}, "every command routed and delivered"
     assert cmds["received_by_agents"] == cmds["issued"]
     assert cmds["completed"] == cmds["issued"], "every result made it back to the dashboard"
+
+
+def test_embedded_single_process_mode_with_demo_fleet(tmp_path):
+    """The free-tier deployment shape: one process runs API + persist + detect + liveness and a
+    small demo fleet. Data must still flow agent -> stream -> DB."""
+    db_url = f"sqlite:///{(tmp_path / 'embedded.db').as_posix()}"
+    tag = uuid.uuid4().hex[:8]
+    port = _free_port()
+    env = {**os.environ, "DATABASE_URL": db_url, "REDIS_URL": REDIS_URL, "PORT": str(port),
+           "TELEMETRY_STREAM": f"emb-{tag}", "DLQ_STREAM": f"emb-{tag}:dlq", "DASHBOARD_CHANNEL": f"emb-{tag}",
+           "WORKER_BLOCK_MS": "200", "EMBEDDED_WORKERS": "persist,detect,liveness",
+           "DEMO_AGENTS": "5", "DEMO_INTERVAL_S": "0.5", "JWT_SECRET": "e2e-" + "s" * 40}
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_DIR, env=env, check=True)
+    proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
+                             "--port", str(port), "--log-level", "warning"], cwd=BACKEND_DIR, env=env)
+    try:
+        import json as _json
+        deadline, status = time.time() + 60, {}
+        while time.time() < deadline:
+            try:
+                status = _json.loads(urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/v1/system/status", timeout=2).read())
+                if status.get("connected_agents") == 5:
+                    break
+            except OSError:
+                pass
+            time.sleep(1)
+        assert status.get("connected_agents") == 5, status
+        latest = _json.loads(urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/v1/metrics/demo-000/latest", timeout=2).read())
+        assert latest["cpu_usage"] is not None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=15)
+        import redis
+        redis.Redis.from_url(REDIS_URL).delete(env["TELEMETRY_STREAM"], env["DLQ_STREAM"])

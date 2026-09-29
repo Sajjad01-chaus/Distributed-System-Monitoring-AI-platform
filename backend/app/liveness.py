@@ -22,11 +22,11 @@ from typing import Dict, List
 
 import redis.asyncio as aioredis
 from redis.exceptions import WatchError
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, tuple_, update
 
 from app import config
 from app.database import SessionLocal, upsert
-from app.models import Agent, Alert
+from app.models import Agent, Alert, SystemMetrics
 from app.pipeline.streams import group_backlog
 
 log = logging.getLogger(__name__)
@@ -136,6 +136,25 @@ class LivenessMonitor:
             db.commit()
         return list(went_offline), list(came_back)
 
+    @staticmethod
+    def prune_old_metrics(now: datetime | None = None, batch: int = 10_000) -> int:
+        """Delete samples older than METRICS_RETENTION_HOURS in bounded batches (so no single
+        statement holds locks for long). For Postgres without TimescaleDB, e.g. a hosted free tier."""
+        if config.METRICS_RETENTION_HOURS <= 0:
+            return 0
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=config.METRICS_RETENTION_HOURS)
+        total = 0
+        while True:
+            with SessionLocal() as db:
+                keys = select(SystemMetrics.agent_id, SystemMetrics.boot_id, SystemMetrics.seq, SystemMetrics.ts)                     .where(SystemMetrics.ts < cutoff).limit(batch).subquery()
+                deleted = db.execute(delete(SystemMetrics).where(
+                    tuple_(SystemMetrics.agent_id, SystemMetrics.boot_id, SystemMetrics.seq, SystemMetrics.ts)
+                    .in_(select(keys)))).rowcount
+                db.commit()
+            total += deleted
+            if deleted < batch:
+                return total
+
     async def _sleep(self, seconds: float) -> None:
         """Sleep, but wake promptly on shutdown (SIGTERM must not wait out a sweep interval)."""
         deadline = asyncio.get_running_loop().time() + seconds
@@ -162,8 +181,19 @@ class LivenessMonitor:
     async def run(self) -> None:
         log.info("liveness monitor %s started", self.lease.owner)
         keeper = asyncio.create_task(self._keep_lease())
+        next_prune = 0.0
+        loop = asyncio.get_running_loop()
         try:
             while not self.stopping:
+                if self.is_leader and config.METRICS_RETENTION_HOURS > 0 and loop.time() >= next_prune:
+                    try:
+                        pruned = await asyncio.to_thread(self.prune_old_metrics)
+                        if pruned:
+                            log.info("retention: pruned %d samples older than %dh", pruned,
+                                     config.METRICS_RETENTION_HOURS)
+                    except Exception:
+                        log.exception("retention prune failed")
+                    next_prune = loop.time() + 600
                 if self.is_leader:
                     try:
                         result = await self.sweep()

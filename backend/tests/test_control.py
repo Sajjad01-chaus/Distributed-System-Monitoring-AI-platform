@@ -14,6 +14,7 @@ from app.database import SessionLocal
 from app.liveness import LeaderLease, LivenessMonitor
 from app.main import create_app
 from app.models import Agent, Alert
+from conftest import token_headers
 
 
 def wait_for(predicate, timeout=5.0):
@@ -40,7 +41,8 @@ def test_command_issued_on_one_replica_reaches_agent_on_another(replicas):
     with a.websocket_connect("/ws/agent/agent-x") as agent:
         wait_for(lambda: sync.get("presence:agent-x") == "replica-a")
 
-        resp = b.post("/api/v1/agents/agent-x/remediate", params={"issue_type": "cpu_threshold_breach"})
+        resp = b.post("/api/v1/agents/agent-x/remediate", params={"issue_type": "cpu_threshold_breach"},
+                      headers=token_headers(a))   # token from replica A, used on replica B
         assert resp.status_code == 202, resp.text
         body = resp.json()
         assert body["status"] == "delivered" and body["routed_to"] == "replica-a"
@@ -53,13 +55,13 @@ def test_command_issued_on_one_replica_reaches_agent_on_another(replicas):
                          "success": True, "dry_run": True})
         wait_for(lambda: sync.hget(f"cmd:{command['command_id']}", "status") == "completed")
 
-    record = b.get(f"/api/v1/commands/{body['command_id']}").json()
+    record = b.get(f"/api/v1/commands/{body['command_id']}", headers=token_headers(b, "viewer", "viewer-pw")).json()
     assert record["status"] == "completed" and record["result"]["success"] is True
 
 
 def test_command_to_unknown_agent_is_404(replicas):
     a, _, _ = replicas
-    resp = a.post("/api/v1/agents/nobody/restart")
+    resp = a.post("/api/v1/agents/nobody/restart", headers=token_headers(a))
     assert resp.status_code == 404 and resp.json()["detail"]["status"] == "not_connected"
 
 
@@ -67,7 +69,7 @@ def test_stale_presence_for_a_dead_replica_is_503_not_a_hang(replicas):
     a, _, sync = replicas
     sync.set("presence:orphan", "replica-that-died", ex=60)
     started = time.time()
-    resp = a.post("/api/v1/agents/orphan/restart")
+    resp = a.post("/api/v1/agents/orphan/restart", headers=token_headers(a))
     assert resp.status_code == 503 and resp.json()["detail"]["status"] == "undeliverable"
     assert time.time() - started < 1.0, "no subscriber -> answer immediately, don't wait for an ack"
 
@@ -198,3 +200,19 @@ async def test_slow_sweep_does_not_cost_the_leader_its_lease(redis_client, monke
         await asyncio.sleep(0.1)
     leader.stopping = True
     await asyncio.wait_for(task, timeout=5)
+
+
+def test_retention_prunes_only_old_samples_in_batches(monkeypatch):
+    from app.models import SystemMetrics
+    monkeypatch.setattr(config, "METRICS_RETENTION_HOURS", 6)
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        db.execute(SystemMetrics.__table__.insert(), [
+            {"agent_id": "a", "boot_id": "b", "seq": i, "ts": now - timedelta(hours=7 if i < 5 else 1), "raw_data": {}}
+            for i in range(8)])
+        db.commit()
+    assert LivenessMonitor.prune_old_metrics(now, batch=2) == 5
+    with SessionLocal() as db:
+        assert sorted(db.scalars(select(SystemMetrics.seq)).all()) == [5, 6, 7]
+    monkeypatch.setattr(config, "METRICS_RETENTION_HOURS", 0)
+    assert LivenessMonitor.prune_old_metrics(now) == 0, "off by default"

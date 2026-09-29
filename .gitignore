@@ -28,3 +28,6 @@ __pycache__/
 test_monitor.db
 .pytest_cache/
 .ruff_cache/
+
+# Local editor/agent tooling
+.claude/

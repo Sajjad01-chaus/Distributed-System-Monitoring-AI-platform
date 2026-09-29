@@ -1,6 +1,7 @@
 """persist group: batch-writes telemetry to the database and announces new rows to dashboards."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Sequence
@@ -39,16 +40,9 @@ class PersistConsumer(StreamConsumer):
             unique.setdefault(env.key, env)
         batch = list(unique.values())
 
-        inserted = set()
-        # DB work is synchronous on purpose: this process does nothing else while it waits.
-        with SessionLocal() as db:
-            for i in range(0, len(batch), CHUNK):
-                stmt = (upsert(SystemMetrics).values([to_row(e) for e in batch[i:i + CHUNK]])
-                        .on_conflict_do_nothing()
-                        .returning(SystemMetrics.agent_id, SystemMetrics.boot_id, SystemMetrics.seq))
-                inserted.update(tuple(r) for r in db.execute(stmt))
-            self._touch_agents(db, batch)
-            db.commit()
+        # DB work runs in a thread: harmless in a dedicated worker, and essential when the
+        # consumer is embedded in the API process (app.embedded), whose event loop must stay free.
+        inserted = await asyncio.to_thread(self._write, batch)
 
         # Only after commit, and only for rows that were new: replays and duplicates stay silent.
         fresh = [e for e in batch if e.key in inserted]
@@ -57,6 +51,18 @@ class PersistConsumer(StreamConsumer):
                                        "metrics": env.payload, "timestamp": env.ts.isoformat()})
         if len(fresh) < len(envelopes):
             log.debug("persist: %d of %d entries were duplicates", len(envelopes) - len(fresh), len(envelopes))
+
+    def _write(self, batch: List[Envelope]) -> set:
+        inserted = set()
+        with SessionLocal() as db:
+            for i in range(0, len(batch), CHUNK):
+                stmt = (upsert(SystemMetrics).values([to_row(e) for e in batch[i:i + CHUNK]])
+                        .on_conflict_do_nothing()
+                        .returning(SystemMetrics.agent_id, SystemMetrics.boot_id, SystemMetrics.seq))
+                inserted.update(tuple(r) for r in db.execute(stmt))
+            self._touch_agents(db, batch)
+            db.commit()
+        return inserted
 
     @staticmethod
     def _touch_agents(db, batch: List[Envelope]) -> None:

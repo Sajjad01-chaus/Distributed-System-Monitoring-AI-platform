@@ -1,0 +1,175 @@
+{
+  "generated_at": "2026-09-29T13:58:24Z",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "cpu_count": 12
+  },
+  "args": {
+    "url": "ws://lb:8000",
+    "agents": "300",
+    "interval": 1.0,
+    "duration": 120.0,
+    "ramp_up": 10.0,
+    "drain": 30.0,
+    "cooldown": 180,
+    "api_url": null,
+    "commands_per_s": 5.0,
+    "mix": "normal=1",
+    "seed": "42",
+    "report": "/reports/phase3-failover-kill.json",
+    "run_prefix": "p3kill"
+  },
+  "stages": [
+    {
+      "run_id": "p3killb0100es0n300",
+      "agents": 300,
+      "interval_s": 1.0,
+      "target_msgs_per_s": 300.0,
+      "send_window_s": 130.0,
+      "sent_unique": 37634,
+      "sent_frames": 37634,
+      "achieved_send_rate": 289.5,
+      "delivered_unique": 37629,
+      "delivered_rate": 289.5,
+      "delivery_ratio": 0.9999,
+      "duplicates_sent": 0,
+      "duplicates_delivered": 0,
+      "reordered": 0,
+      "throttled": 0,
+      "reconnect_gap_ms": {
+        "count": 150,
+        "p50": 138.0,
+        "p95": 381.8,
+        "p99": 399.8,
+        "max": 403.2
+      },
+      "commands": {
+        "issued": 608,
+        "by_http_status": {
+          "202": 608
+        },
+        "received_by_agents": 608,
+        "completed": 577,
+        "ack_ms": {
+          "count": 608,
+          "p50": 8.2,
+          "p95": 13.3,
+          "p99": 20.2,
+          "max": 363.4
+        },
+        "completion_ms": {
+          "count": 577,
+          "p50": 8.8,
+          "p95": 13.8,
+          "p99": 23.0,
+          "max": 522.4
+        }
+      },
+      "server_errors": 0,
+      "persisted_rows": 37629,
+      "e2e_latency_ms": {
+        "count": 37629,
+        "p50": 23.3,
+        "p95": 66.7,
+        "p99": 172.5,
+        "max": 581.0
+      },
+      "api_probe_ms": {
+        "count": 161,
+        "p50": 4.0,
+        "p95": 6.2,
+        "p99": 12.2,
+        "max": 26.1
+      },
+      "api_probe_errors": 0,
+      "send_call_ms": {
+        "count": 37634,
+        "p50": 0.2,
+        "p95": 0.4,
+        "p99": 0.6,
+        "max": 8.3
+      },
+      "sender_lag_ms": {
+        "count": 37784,
+        "p50": 0.7,
+        "p95": 1.4,
+        "p99": 2.0,
+        "max": 9.5
+      },
+      "generator_loop_lag_ms": {
+        "count": 1600,
+        "p50": 0.7,
+        "p95": 1.4,
+        "p99": 1.9,
+        "max": 4.1
+      },
+      "agents_connected": 300,
+      "connects": 450,
+      "connect_failures": 0,
+      "disconnects": 150,
+      "flaps": 0,
+      "anomalies": {
+        "fleet_outlier": 43,
+        "memory_leak_pattern": 2
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          },
+          "memory_leak": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          },
+          "disk_fill": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          },
+          "network_degradation": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          }
+        },
+        "healthy_hosts": 300,
+        "healthy_flagged": 34,
+        "false_positive_rate": 0.113
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.1,
+      "pipeline_after_drain": {
+        "stream_length": 323523,
+        "groups": {
+          "detect": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 4
+          },
+          "persist": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 4
+          }
+        },
+        "dead_letters": 0,
+        "admission": {
+          "replica": "504ff51a666f-1",
+          "overloaded": false,
+          "persist_lag": 0,
+          "accepted": 52908,
+          "rejected": 0,
+          "max_lag": 50000
+        }
+      },
+      "generator_saturated": false,
+      "clock_skew_s": -0.0,
+      "stall_detected": false
+    }
+  ]
+}

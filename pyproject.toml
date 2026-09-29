@@ -5,7 +5,7 @@ pythonpath = ["backend", "agent", "simulator"]
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-extend-exclude = [".venv", "frontend"]
+extend-exclude = [".venv", "dashboard"]
 
 [tool.ruff.lint]
 # Correctness-focused rules only; style is left to the phase rewrites.

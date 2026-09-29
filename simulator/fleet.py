@@ -32,6 +32,7 @@ from scenarios import SyntheticHost, assign_scenarios, detection_quality, parse_
 from stats import StageStats, summarize_ms
 
 COMMAND_GRACE_S = 2.0
+SECRET_ARGS = {"database_url", "auth"}
 CONNECT_ERRORS = (OSError, asyncio.TimeoutError, WebSocketException)
 
 
@@ -162,9 +163,13 @@ async def run_observer(args, run_id: str, stats: StageStats, ready: asyncio.Even
                         sim = (msg.get("metrics") or {}).get("_sim") or {}
                         if sim.get("run_id") == run_id:
                             stats.record_delivery(sim["msg_id"], received - sim["sent_at"])
-                    elif kind == "remediation_result" and msg.get("command_id") in stats.pending_commands:
-                        issued = stats.pending_commands.pop(msg["command_id"])
-                        stats.command_complete_s.append(time.monotonic() - issued)
+                    elif kind == "remediation_result" and msg.get("command_id"):
+                        cid = msg["command_id"]
+                        if cid in stats.pending_commands:
+                            stats.command_complete_s.append(time.monotonic() - stats.pending_commands.pop(cid))
+                        else:
+                            # The agent can answer before our POST even returns the id: keep it.
+                            stats.early_results[cid] = time.monotonic()
                     elif kind == "anomaly_detected" and str(msg.get("agent_id", "")).startswith(prefix):
                         seen = stats.anomalies_by_agent.setdefault(msg["agent_id"], set())
                         for a in msg.get("anomalies", []):
@@ -226,10 +231,18 @@ async def run_commander(args, hosts, stats: StageStats, stop: asyncio.Event, rng
     if not args.commands_per_s:
         return
     base = (args.api_url or _http_base(args)).rstrip("/")
+    headers = {}
+    if args.auth:   # commands need an admin token
+        user, _, password = args.auth.partition(":")
+        login = urllib.request.Request(f"{base}/api/v1/auth/token", method="POST",
+                                       data=json.dumps({"username": user, "password": password}).encode(),
+                                       headers={"Content-Type": "application/json"})
+        token = await asyncio.to_thread(lambda: json.loads(urllib.request.urlopen(login, timeout=10).read()))
+        headers["Authorization"] = f"Bearer {token['access_token']}"
 
     def post(agent_id: str):
         req = urllib.request.Request(f"{base}/api/v1/agents/{agent_id}/remediate?issue_type=cpu_threshold_breach",
-                                     method="POST")
+                                     method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, json.loads(r.read())
@@ -248,7 +261,11 @@ async def run_commander(args, hosts, stats: StageStats, stop: asyncio.Event, rng
             stats.command_status[str(code)] += 1
             if code == 202 and body:
                 stats.command_ack_s.append(time.monotonic() - t0)
-                stats.pending_commands[body["command_id"]] = t0
+                cid = body["command_id"]
+                if cid in stats.early_results:
+                    stats.command_complete_s.append(stats.early_results.pop(cid) - t0)
+                else:
+                    stats.pending_commands[cid] = t0
         await asyncio.sleep(1 / args.commands_per_s)
 
 
@@ -381,6 +398,9 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
 
 
 def print_table(results: List[Dict[str, Any]]) -> None:
+    if not results:
+        print("(no stages)")
+        return
     cols = [("agents", "agents"), ("connected", "agents_connected"), ("target/s", "target_msgs_per_s"),
             ("sent/s", "achieved_send_rate"),
             ("delivered/s", "delivered_rate"), ("delivery", "delivery_ratio"), ("persisted", "persisted_rows")]
@@ -411,6 +431,8 @@ def parse_args(argv=None):
     p.add_argument("--api-url", default=None,
                    help="HTTP base for issued commands (default: derived from --url); lets a test "
                         "issue commands on a different replica than the agents are connected to")
+    p.add_argument("--auth", default=os.getenv("SIM_AUTH"),
+                   help="user:password of an admin, used to obtain a token for issuing commands")
     p.add_argument("--commands-per-s", type=float, default=0,
                    help="issue remediation commands through the API at this rate during each stage")
     p.add_argument("--mix", default=None, help="scenario weights, e.g. normal=0.8,memory_leak=0.2")
@@ -441,7 +463,8 @@ def main(argv=None) -> List[Dict[str, Any]]:
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "environment": {"python": platform.python_version(), "platform": platform.platform(),
                             "cpu_count": os.cpu_count()},
-            "args": {k: v for k, v in vars(args).items() if k != "database_url"},
+            # Never record credentials in a report that gets committed.
+            "args": {k: v for k, v in vars(args).items() if k not in SECRET_ARGS},
             "stages": results,
         }
         os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)

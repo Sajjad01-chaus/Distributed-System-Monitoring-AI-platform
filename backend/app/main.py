@@ -11,12 +11,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Dict
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import RedisError
 from sqlalchemy import func, select, text
 
-from app import config
+from app import auth, config, embedded
 from app.api import agents, alerts, metrics
 from app.api.utils.logger import setup_logger
 from app.control import CommandBus, Presence
@@ -186,19 +186,23 @@ async def _command(request: Request, agent_id: str, command: dict):
     return result
 
 
-@control_router.post("/api/v1/agents/{agent_id}/restart", status_code=202)
+ADMIN = [Depends(auth.require("admin"))]
+VIEWER = [Depends(auth.require("viewer"))]
+
+
+@control_router.post("/api/v1/agents/{agent_id}/restart", status_code=202, dependencies=ADMIN)
 async def restart_agent(request: Request, agent_id: str):
     """Restart an agent, wherever (on whichever replica) it is connected"""
     return await _command(request, agent_id, {"type": "restart"})
 
 
-@control_router.post("/api/v1/agents/{agent_id}/remediate", status_code=202)
+@control_router.post("/api/v1/agents/{agent_id}/remediate", status_code=202, dependencies=ADMIN)
 async def trigger_remediation(request: Request, agent_id: str, issue_type: str = "general"):
     """Trigger an allowlisted remediation action on an agent, wherever it is connected"""
     return await _command(request, agent_id, {"type": "remediate", "issue_type": issue_type})
 
 
-@control_router.get("/api/v1/commands/{command_id}")
+@control_router.get("/api/v1/commands/{command_id}", dependencies=VIEWER)
 async def command_status(request: Request, command_id: str):
     """Lifecycle of a command: pending -> delivered -> completed (with the agent's result)"""
     record = await request.app.state.commands.get(command_id)
@@ -279,6 +283,7 @@ def create_app(replica_id: str | None = None) -> FastAPI:
         state.commands = CommandBus(redis, replica)
         tasks = [asyncio.create_task(state.hub.run()), asyncio.create_task(state.admission.run()),
                  asyncio.create_task(state.commands.listen(state.agents.send))]
+        tasks += embedded.start(redis)   # no-op unless EMBEDDED_WORKERS / DEMO_AGENTS are set
         logger.info("API replica %s started", replica)
         yield
         # Tell agents to reconnect now (the load balancer sends them to a surviving replica)
@@ -293,8 +298,11 @@ def create_app(replica_id: str | None = None) -> FastAPI:
     app = FastAPI(title="System Monitor & Auto-Healing Platform",
                   description="AI-powered system monitoring with intelligent auto-remediation",
                   version="3.0.0", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                       allow_methods=["*"], allow_headers=["*"])
+    # Auth is a bearer header, not a cookie, so credentials mode isn't needed. In production set
+    # CORS_ORIGINS to the dashboard's origin(s), comma-separated.
+    origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]
+    app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
+                       allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
 
     @app.middleware("http")
     async def replica_header(request: Request, call_next):
@@ -305,6 +313,7 @@ def create_app(replica_id: str | None = None) -> FastAPI:
     app.include_router(ws_router)
     app.include_router(health_router)
     app.include_router(control_router)
+    app.include_router(auth.router, tags=["Auth"])
     app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["Metrics"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
     app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])

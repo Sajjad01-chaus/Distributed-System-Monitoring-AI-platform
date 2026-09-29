@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.auth import require
 from app.database import get_db
 from app.models import Alert
 
@@ -49,7 +50,7 @@ def get_alert(alert_id: int, db: Session = Depends(get_db)):
     return _serialize(alert)
 
 
-@router.post("/{alert_id}/resolve")
+@router.post("/{alert_id}/resolve", dependencies=[Depends(require("admin"))])
 def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     """Resolve an alert. A later occurrence of the same problem opens a new active alert."""
     alert = db.get(Alert, alert_id)

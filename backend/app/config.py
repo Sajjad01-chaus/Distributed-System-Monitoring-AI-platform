@@ -8,6 +8,7 @@ def _int(name: str, default: int) -> int:
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
 
 TELEMETRY_STREAM = os.getenv("TELEMETRY_STREAM", "telemetry")
 DLQ_STREAM = os.getenv("DLQ_STREAM", "telemetry:dlq")
@@ -43,3 +44,5 @@ AGENT_STALE_S = _int("AGENT_STALE_S", 90)            # no data this long -> offl
 LIVENESS_SWEEP_S = _int("LIVENESS_SWEEP_S", 10)
 LIVENESS_MAX_LAG = _int("LIVENESS_MAX_LAG", 5_000)   # don't blame agents for our own backlog
 LEADER_LEASE_MS = _int("LEADER_LEASE_MS", 15_000)
+# Raw-sample retention for databases without TimescaleDB (0 = off; Timescale has its own policy).
+METRICS_RETENTION_HOURS = _int("METRICS_RETENTION_HOURS", 0)

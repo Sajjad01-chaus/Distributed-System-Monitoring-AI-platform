@@ -1,0 +1,49 @@
+# Render Blueprint: API (with embedded workers + demo fleet), Postgres, Key Value (Redis).
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo. Then set the `sync: false`
+# values (admin password, dashboard origin) in the service's Environment tab.
+services:
+  - type: web
+    name: dsm-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./deploy/Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: { name: dsm-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: dsm-redis, property: connectionString }
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: VIEWER_USERNAME
+        value: viewer
+      - key: VIEWER_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS          # e.g. https://your-dashboard.vercel.app
+        sync: false
+      - key: EMBEDDED_WORKERS
+        value: persist,detect,liveness
+      - key: DEMO_AGENTS
+        value: "30"
+      - key: DEMO_INTERVAL_S
+        value: "10"
+      # Free-tier sizing: 25 MB Redis, 1 GB Postgres without TimescaleDB.
+      - key: STREAM_MAXLEN
+        value: "5000"
+      - key: PERSIST_MAX_LAG
+        value: "2000"
+      - key: METRICS_RETENTION_HOURS
+        value: "6"
+  - type: keyvalue
+    name: dsm-redis
+    plan: free
+    maxmemoryPolicy: noeviction   # evicting stream entries would silently lose telemetry
+    ipAllowList: []               # internal connections only
+databases:
+  - name: dsm-db
+    plan: free

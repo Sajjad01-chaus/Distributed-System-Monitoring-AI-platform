@@ -25,3 +25,20 @@ def test_median_range_and_stall_exclusion(tmp_path):
     assert "| Delivered msg/s | 2.2 [2.0–2.4] | 4.0 |" in table
     assert "| E2E p99 (ms) | 200 [100–300] | 900 |" in table
     assert "stalled stages excluded: 1" in table
+
+
+def test_reports_never_contain_credentials(tmp_path, monkeypatch):
+    import json as _json
+
+    import fleet
+    monkeypatch.setattr(fleet, "main_async", lambda args: _noop())
+    report = tmp_path / "r.json"
+    fleet.main(["--agents", "1", "--auth", "admin:hunter2", "--database-url", "postgresql://u:secret@h/db",
+                "--report", str(report)])
+    text = report.read_text()
+    assert "hunter2" not in text and "secret@" not in text
+    assert "auth" not in _json.loads(text)["args"]
+
+
+async def _noop():
+    return []

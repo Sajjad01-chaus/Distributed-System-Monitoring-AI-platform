@@ -3,24 +3,64 @@
 ## Data flow
 
 ```text
-                        ┌──────────────────────────── API process(es) ─────────────────────────────┐
- Agent ──WS /ws/agent──►│ validate (size, JSON, identity) → admission check → XADD telemetry        │
-                        │ /ws/dashboard ◄── DashboardHub ◄── SUBSCRIBE dashboard                    │
-                        │ /health (liveness) · /ready (Redis+DB) · /api/v1/system/pipeline           │
-                        └───────────────────────────────┬──────────────────────────────────────────┘
+                 ┌─────────────── nginx (lb) ───────────────┐
+ Agents ──WS────►│ least_conn · WebSocket upgrade · DNS      │──► API replica 1 ┐
+ Dashboards ─WS─►│ re-resolve · idempotent-only retries      │──► API replica 2 ├─ each: validate → admission → XADD
+ Operators ─HTTP►│                                           │──► API replica N ┘        presence · command listener
+                 └───────────────────────────────────────────┘                            dashboard relay
+                                                        │
                                                         ▼
-                                          Redis Stream "telemetry" (AOF on)
-                                  ┌─────────────────────┴─────────────────────┐
-                        consumer group "persist"                    consumer group "detect"
-                        N × worker-persist                          M × worker-detect
-                        batch INSERT … ON CONFLICT DO NOTHING       per-agent windows + alert state in Redis
-                        RETURNING → publish metrics_update          detectors + fleet IsolationForest
-                        upsert agent liveness                        open/resolve alerts → publish events
-                                  │                                           │
-                                  └──────────► PostgreSQL + TimescaleDB ◄──────┘
+                                          Redis ── Stream "telemetry" (AOF on)
+                                            │      presence:{agent} → replica
+                                            │      pub/sub: dashboard · replica:{id}:commands
+                                            │      leader:liveness lease
+                                  ┌─────────┴─────────────────────────┐
+                        consumer group "persist"             consumer group "detect"          liveness × 2
+                        N × worker-persist                   M × worker-detect                (one leader)
+                        batch INSERT … ON CONFLICT           per-agent windows in Redis        offline/online sweeps
+                        DO NOTHING RETURNING                 detectors + fleet IsolationForest
+                                  │                                   │                              │
+                                  └──────────────► PostgreSQL + TimescaleDB ◄────────────────────────┘
                                               system_metrics (hypertable, 7-day retention)
                                               alerts (one active per agent+type) · agents
 ```
+
+## Control plane (Phase 3)
+
+**Commands reach an agent no matter which replica receives the request.** An agent's socket lives
+on one replica; the request can land on any of them:
+
+```text
+ POST /api/v1/agents/X/remediate ──► replica B
+   B: GET presence:X → "replica-A"                      (who holds X's socket?)
+   B: PUBLISH replica:replica-A:commands {command_id…}  (0 receivers → 503: stale presence)
+   A: writes the command to X's socket, RPUSH cmdack:{id}
+   B: BLPOP cmdack:{id} (3 s) → 202 delivered           (timeout → 504 unacknowledged)
+ X: remediation_result {command_id} ──► A ──► cmd:{id} = completed, and relayed to dashboards
+ GET /api/v1/commands/{id} on any replica ──► pending / delivered / completed + result
+```
+
+Presence is claimed on connect, refreshed a few times per TTL (piggy-backing on traffic, no
+per-message write), and released on disconnect only if it still points at this replica
+(WATCH/MULTI), so a reconnect that moved the agent to another replica is never undone by the old
+socket's cleanup.
+
+**Liveness runs with leader election.** Two `liveness` replicas compete for a Redis lease
+(`SET NX PX`, owner-checked renew/release). The holder sweeps: agents silent for `AGENT_STALE_S`
+become `offline` with an `agent_offline` alert, their other alerts become `stale`, and their
+detector state is cleared. On return, the alert resolves. Three details keep it correct:
+- lease renewal runs in its own task and sweep DB work in a thread, so a long sweep can't let the
+  lease lapse (it did, before this was fixed: two leaders for ~3 s during a 7,000-agent sweep);
+- each sweep is bounded (500 agents), so no single pass runs long;
+- every action is an idempotent UPDATE guarded by current state, so even a brief two-leader overlap
+  only repeats work. That's why no fencing token is needed here.
+
+It also refuses to declare agents dead when the persist backlog is high: stale `last_seen` values
+then mean *we* are behind, not that the agents are silent.
+
+**Replicas drain gracefully.** On SIGTERM a replica closes agent sockets with 1012 ("service
+restart"); agents reconnect right away with exponential backoff and jitter, and the load balancer
+sends them to a surviving replica.
 
 ## Why each piece exists
 
@@ -54,11 +94,10 @@
 
 ## Known limits (next phases)
 
-- Commands to agents (`/remediate`, `/restart`) only reach agents connected to the same API
-  replica. Cross-replica command routing is Phase 3.
-- Alerts on an agent that goes silent stay active, because nothing evaluates that agent anymore.
-  Heartbeat-based liveness (mark agents offline and handle their alerts) is Phase 3.
-  `/api/v1/system/status` already excludes silent agents from its health counts.
+- Agent telemetry has no application-level acknowledgement: frames in flight when a replica
+  crashes are lost (measured in [phase3-results](benchmarks/phase3-results.md)). Idempotent storage already
+  makes resending safe; an ack/resend protocol is the fix.
+
 - No authentication yet (Phase 4). Pipeline metrics are exposed as JSON; Prometheus/Grafana come in Phase 5.
 - The detection thresholds are calibrated for the simulator's time scale (10 s samples, faults
   developing over minutes). In a real deployment they are configuration, set per environment.

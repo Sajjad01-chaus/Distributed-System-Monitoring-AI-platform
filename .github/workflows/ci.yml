@@ -31,33 +31,66 @@ jobs:
       - name: Tests
         run: pytest -q
 
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: Type-check and static build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+          NEXT_TELEMETRY_DISABLED: "1"
+
   compose-smoke:
-    # Full stack on real Postgres/Timescale + a small synthetic fleet, sized well under the
-    # Phase 1 capacity ceiling (~3 msg/s) so it checks correctness, not throughput. Unit tests use SQLite,
-    # so this is what catches driver/config/startup problems (e.g. a DB URL the image can't load).
+    # Full stack (nginx + API replicas + workers + liveness + Timescale + Redis + Grafana) and a
+    # small synthetic fleet with authenticated commands. Unit tests use SQLite, so this is what
+    # catches driver/config/startup problems (e.g. a DB URL the image can't load).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Configure secrets for CI
-        run: echo "POSTGRES_PASSWORD=ci-$(openssl rand -hex 12)" > .env
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=ci-$(openssl rand -hex 12)"
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "ADMIN_PASSWORD=ci-$(openssl rand -hex 12)"
+            echo "VIEWER_PASSWORD=ci-$(openssl rand -hex 12)"
+            echo "GRAFANA_ADMIN_PASSWORD=ci-$(openssl rand -hex 12)"
+            echo "GRAFANA_DB_PASSWORD=ci-$(openssl rand -hex 12)"
+          } > .env
       - name: Start stack
-        run: docker compose up -d --build --wait --wait-timeout 180
-      - name: Run synthetic fleet
+        run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Run synthetic fleet (through the load balancer, with commands)
         run: >
           docker compose --profile loadtest run --rm --no-deps fleet
           --agents 5 --interval 5 --duration 30 --ramp-up 2 --drain 20 --mix normal=1
-          --run-prefix ci --report /reports/ci-smoke.json
-      - name: Assert delivery and persistence
+          --commands-per-s 1 --run-prefix ci --report /reports/ci-smoke.json
+      - name: Assert delivery, persistence and command routing
         run: |
           python3 - <<'PY'
           import json
           s = json.load(open("docs/benchmarks/ci-smoke.json"))["stages"][0]
-          print(json.dumps({k: s[k] for k in ("agents_connected", "sent_unique", "delivery_ratio", "persisted_rows")}))
+          c = s["commands"]
+          print(json.dumps({k: s[k] for k in ("agents_connected", "sent_unique", "delivery_ratio", "persisted_rows")}),
+                json.dumps(c["by_http_status"]), c["completed"])
           assert s["agents_connected"] == 5, s
           assert s["sent_unique"] > 0 and s["delivery_ratio"] == 1.0, s
           assert s["persisted_rows"] == s["sent_unique"], s
           assert not s["stall_detected"], s
+          assert c["issued"] > 0 and c["by_http_status"] == {"202": c["issued"]}, c
+          assert c["completed"] == c["issued"], c
           PY
-      - name: Backend logs
+      - name: Grafana provisioned
+        run: curl -fsS http://localhost:3001/api/dashboards/uid/fleet-overview | python3 -c "import json,sys; assert len(json.load(sys.stdin)['dashboard']['panels']) == 9"
+      - name: Logs
         if: always()
-        run: docker compose logs backend --tail 100
+        run: docker compose logs backend migrate liveness --tail 60

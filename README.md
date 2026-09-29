@@ -10,37 +10,47 @@ This repository is being evolved, phase by phase, from a single-process prototyp
 scalable, secured observability control plane — with every change measured against a synthetic
 agent fleet rather than asserted. See [Roadmap](#roadmap).
 
-## Architecture (Phase 2)
+## Architecture
 
 ```text
- Agent ──WS──► API ──XADD──► Redis Stream ─┬─ group "persist" → N workers → TimescaleDB (idempotent)
-                ▲                          └─ group "detect"  → M workers → per-agent detection → alerts
- Dashboard ◄─WS─┘◄──────── Redis pub/sub ◄── workers publish metrics_update / anomaly_detected / alert_resolved
+ Agents ─────WS──┐                              ┌─ group "persist" → N workers → TimescaleDB (idempotent)
+ Dashboard ──WS──┼─► nginx ─► API replicas ─XADD─► Redis Stream ─┤
+ Operators ─HTTP─┘  (LB)     (validate, admit,  │                └─ group "detect"  → M workers → per-agent detection → alerts
+                              route commands)   │
+                        ◄──── Redis pub/sub ◄───┘  presence · commands · events      liveness × 2 (leader-elected)
 ```
 
 The API does nothing slow: it validates, applies admission control, and enqueues. Storage and
 detection run in separate consumer groups, so detection can fall behind without delaying
 storage. Delivery is at-least-once with idempotent writes (effectively once), crashed workers'
-messages are re-claimed, poison messages go to a dead-letter stream, and detector state lives
-in Redis so workers stay stateless. **Why each piece exists: [docs/architecture.md](docs/architecture.md).**
+messages are re-claimed, and poison messages go to a dead-letter stream. Any API replica can serve
+any request: agent presence and command routing live in Redis, and a leader-elected liveness
+monitor marks silent agents offline. **Why each piece exists: [docs/architecture.md](docs/architecture.md).**
 
 | Component | Path | Notes |
 |---|---|---|
-| Agent | `agent/` | psutil collectors; `(boot_id, seq)` idempotency key; honours server throttling; allowlisted remediation, dry-run by default |
-| API | `backend/app/main.py` | WebSocket ingest → stream, admission control, dashboard relay, `/health` + `/ready`, pipeline status |
-| Workers | `backend/app/pipeline/`, `python -m app.worker persist\|detect` | Reliable consumers: batching, XAUTOCLAIM recovery, DLQ, transient-error backoff |
+| Agent | `agent/` | psutil collectors; `(boot_id, seq)` idempotency key; backoff with jitter; honours throttling; allowlisted remediation, dry-run by default |
+| Load balancer | `nginx/` | `least_conn` for long-lived WebSockets, DNS re-resolution (scale without reload), idempotent-only retries |
+| API | `backend/app/main.py` | Ingest → stream, admission control, presence + command routing, dashboard relay, JWT (`auth.py`), `/health` + `/ready` |
+| Workers | `backend/app/pipeline/`, `python -m app.worker persist\|detect\|liveness` | Reliable consumers: batching, XAUTOCLAIM recovery, DLQ, transient-error backoff; liveness with a Redis lease |
 | Detection | `backend/app/detection/` | Sustained thresholds, leak trend, disk-full forecast, latency degradation, fleet outliers; alert lifecycle with hysteresis |
-| Schema | `backend/migrations/` | Alembic; Timescale hypertable with 7-day retention |
-| Simulator | `simulator/` | Synthetic fleet with fault injection and ground-truth scoring |
-| Dashboard | `frontend/` | Streamlit (to be replaced by a React/Next.js app) |
+| Schema | `backend/migrations/` | Alembic; Timescale hypertable with 7-day retention; read-only Grafana role |
+| Dashboard | `dashboard/` | Next.js (static export): live fleet stats, pipeline health, event feed, admin actions |
+| Grafana | `grafana/` | Provisioned as code on TimescaleDB: ingest rate, CPU/memory percentiles, alerts |
+| Simulator | `simulator/` | Synthetic fleet with fault injection, ground-truth scoring, command/failover measurement |
 
 ## Quickstart
 
 ```bash
-cp .env.example .env            # then set POSTGRES_PASSWORD
-docker compose up --build       # API on http://localhost:8000, docs at /docs
-docker compose up -d --scale worker-persist=3 --scale worker-detect=2   # scale workers independently
+cp .env.example .env            # fill in the passwords and secrets
+docker compose up -d --build --scale backend=3
+#   API (through nginx): http://localhost:8000/docs · Grafana: http://localhost:3001
+cd dashboard && npm install && NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev   # http://localhost:3000
 ```
+
+Scale any tier independently: `docker compose up -d --scale backend=3 --scale worker-persist=3`.
+Admin actions (remediate, resolve) need a token: `POST /api/v1/auth/token` with `ADMIN_USERNAME` /
+`ADMIN_PASSWORD` from `.env`, or sign in on the dashboard. **Deploying to Render + Vercel: [docs/deploy.md](docs/deploy.md).**
 
 Run an agent against it:
 
@@ -50,8 +60,6 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml
 python agent.py                 # or: AGENT_ID=my-host SERVER_URL=ws://localhost:8000 python agent.py
 ```
-
-Dashboard (optional): `cd frontend && pip install -r requirements.txt && streamlit run app.py`
 
 ## Development
 
@@ -105,14 +113,22 @@ Killing a worker that holds unacked messages loses nothing: the survivor re-clai
 ([`scripts/chaos-kill-persist-worker.sh`](scripts/chaos-kill-persist-worker.sh)). Detection catches
 92–100% of injected leaks, disk fills, network degradations and CPU spikes, up from 1% for leaks.
 
+**Phase 3** ([full results](docs/benchmarks/phase3-results.md)): 300 agents across 3 API replicas behind nginx.
+Commands issued on any replica reach the agent wherever it's connected: **738/738 completed**, with a
+p50 of 8.7 ms to delivery and 9.3 ms to the agent's result. Losing one of three replicas mid-load:
+a graceful stop moves its 100 agents in **≤ 67 ms with zero loss**; a hard kill moves them in ≤ 403 ms
+and loses **5 of 37,634** in-flight messages (0.013%, predicted before the run: telemetry has no
+app-level ack yet).
+
 ## Known limitations
 
-These are deliberate starting points for the roadmap — each will be fixed and measured, not hidden:
-
-- **Commands to agents are replica-local.** `/remediate` and `/restart` only reach agents connected to
-  the API replica that receives the request (Phase 3: cross-replica routing behind a load balancer).
-- **No authentication** on REST/WebSocket endpoints; CORS allows `*` (Phase 4).
-- **Pipeline metrics are JSON only** (`/api/v1/system/pipeline`); Prometheus/Grafana come in Phase 5.
+- **Telemetry has no application-level ack**, so frames in flight when an API replica crashes are lost
+  (0.013% in the kill test). Storage is idempotent, so an ack/resend protocol is the straightforward fix.
+- **Auth covers the control plane only.** Commands and alert resolution need an admin JWT; telemetry
+  reads, the dashboard stream and agent connections are open (demo choice). Per-agent credentials and
+  audit logging are next.
+- **Pipeline internals** (stream lag, DLQ) are exposed as JSON (`/api/v1/system/pipeline`) and on the
+  dashboard; Grafana charts the database. A Prometheus exporter for the pipeline would complete the picture.
 - **Detection thresholds are calibrated for the simulator's time scale** (10 s samples, faults developing
   over minutes); in a real deployment they're per-environment configuration.
 
@@ -123,7 +139,6 @@ These are deliberate starting points for the roadmap — each will be fixed and 
 | 0 ✅ | Repo cleanup, working agent, config via env, tests + CI | Reproducible baseline |
 | 1 ✅ | Synthetic agent fleet (failure scenarios) + load harness | [Baseline](docs/benchmarks/phase1-baseline.md): ~8 msg/s ceiling |
 | 2 ✅ | Redis Streams pipeline, consumer-group workers, idempotency, DLQ, Timescale, Alembic; per-agent detection with alert lifecycle | [Results](docs/benchmarks/phase2-results.md): ≥770 msg/s, 0% false positives |
-| 3 | Scale-out: Nginx LB, N API replicas, Redis pub/sub WebSocket fan-out, heartbeat liveness | Horizontal scaling |
-| 4 | Security: JWT + RBAC, per-agent credentials, signed expiring commands, rate limiting, audit log | Secure control plane |
-| 5 | Self-observability: Prometheus, Grafana, OpenTelemetry, liveness/readiness | Operability |
-| 6 | Chaos tests (kill workers/replicas/Redis under load) + published results; React dashboard | Evidence |
+| 3 ✅ | nginx LB, API replicas, presence + cross-replica command routing, leader-elected liveness | [Results](docs/benchmarks/phase3-results.md): failover ≤ 67 ms, zero loss when graceful |
+| 3+ ✅ | JWT roles, Grafana on TimescaleDB, Next.js dashboard, Render/Vercel deploy | [docs/deploy.md](docs/deploy.md) |
+| next | Telemetry ack/resend, per-agent credentials + audit log, Prometheus exporter, rate limiting | |
