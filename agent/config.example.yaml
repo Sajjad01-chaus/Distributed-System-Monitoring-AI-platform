@@ -1,0 +1,13 @@
+# Copy to config.yaml (gitignored). AGENT_ID / SERVER_URL env vars override these.
+agent_id: agent_local
+server_url: ws://localhost:8000
+collection_interval: 30          # seconds between metric pushes
+
+# Services whose status is reported in health indicators
+critical_services: []            # e.g. [nginx, postgresql] on Linux, [Spooler] on Windows
+connectivity_test_hosts: [8.8.8.8, 1.1.1.1]
+
+# Remediation only runs allowlisted actions. Leave dry-run on unless this is a
+# disposable machine: when false, the agent really kills processes / deletes temp files.
+remediation_dry_run: true
+kill_cpu_threshold: 90.0

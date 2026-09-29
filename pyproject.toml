@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["backend/tests", "agent/tests"]
+pythonpath = ["backend", "agent"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = [".venv", "frontend"]
+
+[tool.ruff.lint]
+# Correctness-focused rules only; style is left to the phase rewrites.
+select = ["F", "E9", "B006", "B904"]
+ignore = ["F403", "F405"]

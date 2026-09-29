@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg14
+    container_name: system_monitor_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-system_monitor}
+      POSTGRES_USER: ${POSTGRES_USER:-monitor_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: system_monitor_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: system_monitor_api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-system_monitor}
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
