@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
-testpaths = ["backend/tests", "agent/tests"]
-pythonpath = ["backend", "agent"]
+testpaths = ["backend/tests", "agent/tests", "simulator/tests"]
+pythonpath = ["backend", "agent", "simulator"]
 
 [tool.ruff]
 target-version = "py312"

@@ -54,6 +54,23 @@ pytest -q          # backend tests run against SQLite; no services needed
 
 CI (`.github/workflows/ci.yml`) runs lint, tests and a backend image build on every push and PR.
 
+## Load testing with a synthetic fleet
+
+`simulator/` runs hundreds of simulated agents that speak the real agent protocol, with
+per-host failure scenarios (CPU spikes, memory leaks, disk fill, network degradation,
+flapping connections, duplicate and out-of-order sends). It measures end-to-end latency,
+delivery, persisted rows and API responsiveness while the backend is under load.
+
+```bash
+cd simulator
+pip install -r requirements.txt
+python fleet.py --agents 25,50,100,200 --interval 10 --duration 60 \
+    --database-url postgresql://monitor_user:<password>@localhost:5432/system_monitor \
+    --report ../docs/benchmarks/my-run.json
+```
+
+Methodology and results: [`docs/benchmarks/`](docs/benchmarks/).
+
 ## Known limitations
 
 These are deliberate starting points for the roadmap — each will be fixed and measured, not hidden:

@@ -1,5 +1,6 @@
 import asyncio
 import websockets
+import websockets.exceptions  # submodules are lazy in websockets>=14; import explicitly
 import json
 import logging
 import platform
