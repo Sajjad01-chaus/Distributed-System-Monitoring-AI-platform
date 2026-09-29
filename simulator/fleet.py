@@ -34,11 +34,20 @@ CONNECT_ERRORS = (OSError, asyncio.TimeoutError, WebSocketException)
 
 
 # --- simulated agent ----------------------------------------------------------------
-async def _drain(ws) -> None:
-    """Consume server->agent commands so the socket's receive buffer never fills."""
+async def _drain(ws, stats: StageStats, backoff: Dict[str, float]) -> None:
+    """Consume server->agent messages so the receive buffer never fills; honour throttles
+    the way the real agent does (pause sending for retry_after_s)."""
     try:
-        async for _ in ws:
-            pass
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if msg.get("type") == "throttle":
+                stats.throttled += 1
+                backoff["until"] = time.monotonic() + float(msg.get("retry_after_s", 5))
+            elif msg.get("type") == "error":
+                stats.server_errors += 1
     except ConnectionClosed:
         pass
 
@@ -63,7 +72,8 @@ async def run_agent(host: SyntheticHost, args, run_id: str, stats: StageStats,
         stats.connects += 1
         stats.connected_agents.add(host.agent_id)
         backoff = 0.5
-        drainer = asyncio.create_task(_drain(ws))
+        throttle = {"until": 0.0}
+        drainer = asyncio.create_task(_drain(ws, stats, throttle))
         loop = asyncio.get_running_loop()
         flap_at = loop.time() + rng.uniform(5, 15) if host.scenario == "flapping" else None
         next_send = loop.time()
@@ -76,6 +86,8 @@ async def run_agent(host: SyntheticHost, args, run_id: str, stats: StageStats,
                         break
                 stats.sender_lag_s.append(max(0.0, loop.time() - next_send))
                 next_send += args.interval * rng.uniform(0.9, 1.1)
+                if time.monotonic() < throttle["until"]:
+                    continue   # server said back off: skip this sample, like the real agent
 
                 frame = json.dumps(host.payload(run_id, sent_at=time.time()))
 
@@ -157,16 +169,34 @@ async def run_loop_monitor(stats: StageStats, done: asyncio.Event) -> None:
         stats.generator_loop_lag_s.append(max(0.0, loop.time() - t0 - 0.1))
 
 
+def _http_base(args) -> str:
+    return args.url.replace("ws://", "http://").replace("wss://", "https://")
+
+
+async def pipeline_snapshot(args) -> Optional[Dict[str, Any]]:
+    """Backlog/DLQ/admission state from backends that expose it (Phase 2+), else None."""
+    def fetch():
+        with urllib.request.urlopen(_http_base(args) + "/api/v1/system/pipeline", timeout=10) as r:
+            return json.loads(r.read())
+    try:
+        return await asyncio.to_thread(fetch)
+    except Exception:
+        return None
+
+
 async def wait_until_idle(args) -> float:
-    """Block until /health answers fast 3 times running, so a previous stage's backlog
-    doesn't leak into the next stage's numbers. Returns seconds waited."""
-    url = args.url.replace("ws://", "http://").replace("wss://", "https://") + "/health"
+    """Block until /health answers fast 3 times running and (on pipeline backends) the persist
+    backlog is empty, so a previous stage's backlog doesn't leak into the next stage's
+    numbers. The detect group may still be behind; that is reported, not waited on."""
+    url = _http_base(args) + "/health"
     start, fast = time.time(), 0
     while fast < 3 and time.time() - start < args.cooldown:
         t0 = time.perf_counter()
         try:
             await asyncio.to_thread(lambda: urllib.request.urlopen(url, timeout=10).read())
-            fast = fast + 1 if time.perf_counter() - t0 < 0.1 else 0
+            snap = await pipeline_snapshot(args)
+            persist_lag = ((snap or {}).get("groups", {}).get("persist") or {}).get("lag") or 0
+            fast = fast + 1 if time.perf_counter() - t0 < 0.1 and persist_lag == 0 else 0
         except Exception:
             fast = 0
         await asyncio.sleep(1)
@@ -238,6 +268,7 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
     await asyncio.gather(observer, probe, monitor, return_exceptions=True)
 
     persisted = count_persisted(args.database_url, run_id) if args.database_url else None
+    pipeline = await pipeline_snapshot(args)
     delivered = len(stats.delivered_ids)
     gen_lag = summarize_ms(stats.generator_loop_lag_s)
     connected = {h.agent_id: h.scenario for h in hosts if h.agent_id in stats.connected_agents}
@@ -256,6 +287,8 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
         "duplicates_sent": stats.duplicates_sent,
         "duplicates_delivered": stats.duplicates_delivered,
         "reordered": stats.reordered,
+        "throttled": stats.throttled,
+        "server_errors": stats.server_errors,
         "persisted_rows": persisted,
         "e2e_latency_ms": summarize_ms(stats.e2e_latency_s),
         "api_probe_ms": summarize_ms(stats.probe_latency_s),
@@ -273,6 +306,7 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
         "observer_connected": ready.is_set(),
         "observer_errors": stats.observer_errors,
         "pre_stage_cooldown_s": round(cooldown_s, 1),
+        "pipeline_after_drain": pipeline,
         # A busy generator loop (>50 ms p99) means the harness, not the backend, may be the limit.
         "generator_saturated": bool(gen_lag["p99"] and gen_lag["p99"] > 50),
         # A freeze (host sleep, VM pause, stopped process) invalidates the stage's numbers. Small

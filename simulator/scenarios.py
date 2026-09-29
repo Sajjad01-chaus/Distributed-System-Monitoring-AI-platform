@@ -130,6 +130,9 @@ class SyntheticHost:
         bytes_recv = r.uniform(5e4, 5e6)
         return {
             "agent_id": self.agent_id,
+            # Protocol idempotency key, same as the real agent: (agent_id, boot_id, seq).
+            "boot_id": run_id,
+            "seq": self.seq,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)),
             "platform": {"system": "Linux", "node": self.agent_id, "release": "6.8-sim", "machine": "x86_64"},
             "cpu_usage": round(self.cpu, 2),

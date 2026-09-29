@@ -6,7 +6,9 @@ import logging
 import platform
 import os
 import sys
-from datetime import datetime
+import time
+import uuid
+from datetime import datetime, timezone
 from typing import Dict, Any, List
 import signal
 import yaml
@@ -27,6 +29,10 @@ class SystemMonitorAgent:
         self.server_url = config.get('server_url', 'ws://localhost:8000')
         self.collection_interval = config.get('collection_interval', 30)
         self.websocket = None
+        # (agent_id, boot_id, seq) identifies every message; the server dedups on it.
+        self.boot_id = uuid.uuid4().hex
+        self.seq = 0
+        self.throttled_until = 0.0
         self.running = False
         
         # Initialize collectors
@@ -106,7 +112,7 @@ class SystemMonitorAgent:
                 # Send metrics to server
                 await self.websocket.send(json.dumps(metrics))
                 
-                await asyncio.sleep(self.collection_interval)
+                await asyncio.sleep(max(self.collection_interval, self.throttled_until - time.monotonic()))
                 
             except Exception as e:
                 self.logger.error(f"Error collecting/sending metrics: {e}")
@@ -114,9 +120,12 @@ class SystemMonitorAgent:
 
     async def collect_all_metrics(self) -> Dict[str, Any]:
         """Collect all system metrics"""
+        self.seq += 1
         metrics = {
             'agent_id': self.agent_id,
-            'timestamp': datetime.now().isoformat(),
+            'boot_id': self.boot_id,
+            'seq': self.seq,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'platform': {
                 'system': platform.system(),
                 'node': platform.node(),
@@ -187,14 +196,14 @@ class SystemMonitorAgent:
                 service_status.append({
                     'name': service,
                     'status': status,
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now(timezone.utc).isoformat()
                 })
             except Exception as e:
                 service_status.append({
                     'name': service,
                     'status': 'error',
                     'error': str(e),
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now(timezone.utc).isoformat()
                 })
         
         return service_status
@@ -251,6 +260,13 @@ class SystemMonitorAgent:
                 await self.execute_remediation(command.get('issue_type'))
             elif command_type == 'update_config':
                 await self.update_config(command.get('config'))
+            elif command_type == 'throttle':
+                # Server backlog is above its limit: back off instead of piling on.
+                retry = float(command.get('retry_after_s', 5))
+                self.throttled_until = time.monotonic() + retry
+                self.logger.warning(f"Server asked to back off for {retry}s: {command.get('reason')}")
+            elif command_type == 'error':
+                self.logger.warning(f"Server rejected a message: {command.get('reason')}")
             elif command_type == 'ping':
                 await self.websocket.send(json.dumps({'type': 'pong'}))
             else:
@@ -282,7 +298,7 @@ class SystemMonitorAgent:
                 'dry_run': self.remediation_dry_run,
                 'success': result.get('success', False),
                 'output': result,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }))
 
         except Exception as e:
@@ -323,7 +339,7 @@ class SystemMonitorAgent:
                 'type': 'config_updated',
                 'applied': sorted(accepted),
                 'rejected': rejected,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }))
             
         except Exception as e:

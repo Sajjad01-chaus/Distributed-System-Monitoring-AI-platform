@@ -35,6 +35,17 @@ async def test_collect_all_metrics_has_flat_keys(agent, monkeypatch):
     for key in ("cpu_usage", "memory_usage", "disk_usage", "network_latency", "processes"):
         assert key in metrics
     assert 0 <= metrics["cpu_usage"] <= 100
+    # Idempotency key: stable boot_id, strictly increasing seq, UTC timestamp.
+    second = await agent.collect_all_metrics()
+    assert metrics["boot_id"] == second["boot_id"] and second["seq"] == metrics["seq"] + 1
+    assert metrics["timestamp"].endswith("+00:00")
+
+
+@pytest.mark.asyncio
+async def test_throttle_from_server_delays_next_send(agent):
+    import time
+    await agent.process_command({"type": "throttle", "retry_after_s": 30, "reason": "backlog"})
+    assert agent.throttled_until - time.monotonic() > 25
 
 
 @pytest.mark.asyncio

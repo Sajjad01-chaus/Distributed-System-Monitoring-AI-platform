@@ -1,3 +1,14 @@
+# Shared by every service built from ./backend (API, workers, migrations).
+x-backend: &backend
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  environment: &backend-env
+    DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}@postgres:5432/${POSTGRES_DB:-system_monitor}
+    REDIS_URL: redis://redis:6379/0
+  volumes:
+    - ./backend/app:/app/app
+
 services:
   postgres:
     image: timescale/timescaledb:latest-pg14
@@ -19,6 +30,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: system_monitor_redis
+    # AOF so an ingest backlog survives a Redis restart; everysec bounds loss to ~1 s.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
     volumes:
@@ -29,26 +42,51 @@ services:
       timeout: 3s
       retries: 20
 
+  # One-shot schema migration; everything that touches the database waits for it.
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    <<: *backend
     container_name: system_monitor_api
-    environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-system_monitor}
-      REDIS_URL: redis://redis:6379
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend/app:/app/app
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 5s
       timeout: 5s
       retries: 20
     depends_on:
-      postgres:
+      migrate:
+        condition: service_completed_successfully
+      redis:
         condition: service_healthy
+
+  # Consumer-group workers. Scale independently, e.g. `docker compose up -d --scale worker-persist=3`.
+  worker-persist:
+    <<: *backend
+    command: ["python", "-m", "app.worker", "persist"]
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker-detect:
+    <<: *backend
+    command: ["python", "-m", "app.worker", "detect"]
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 

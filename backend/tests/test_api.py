@@ -1,74 +1,116 @@
-"""Smoke tests pinning the current API behaviour before the ingestion pipeline is refactored."""
-import os
+"""API behaviour: the agent socket only validates and enqueues; workers do the rest."""
+import asyncio
+import time
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_monitor.db")
-
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 
+from app import config
 from app.main import app
+from app.pipeline import streams
+from app.pipeline.persist import PersistConsumer
+
+SAMPLE = {"agent_id": "agent-t1", "boot_id": "b1", "seq": 1, "timestamp": "2026-09-29T10:00:00+00:00",
+          "cpu_usage": 42.5, "memory_usage": 61.0, "disk_usage": 70.0, "network_latency": 12.0}
 
 
-@pytest.fixture(scope="module")
-def client():
+def wait_for(predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    while not predicate():
+        if time.time() > deadline:
+            raise AssertionError("condition not met in time")
+        time.sleep(0.02)
+
+
+@pytest.fixture
+def sync_redis(redis_server):
+    return fakeredis.FakeRedis(server=redis_server, decode_responses=True)
+
+
+@pytest.fixture
+def client(redis_server, sync_redis):
     with TestClient(app) as c:
+        # Don't publish before the dashboard relay has subscribed, or the event is simply missed.
+        wait_for(lambda: dict(sync_redis.pubsub_numsub(config.DASHBOARD_CHANNEL))[config.DASHBOARD_CHANNEL] > 0)
         yield c
-    if os.path.exists("test_monitor.db"):
-        os.remove("test_monitor.db")
 
 
-def test_health(client):
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "healthy"
+def stream_len(r) -> int:
+    return r.xlen(config.TELEMETRY_STREAM) if r.exists(config.TELEMETRY_STREAM) else 0
 
 
-def test_agent_metrics_are_persisted_and_broadcast(client):
-    sample = {"agent_id": "agent-test-1", "cpu_usage": 42.5, "memory_usage": 61.0,
-              "disk_usage": 70.0, "network_latency": 12.0}
+def run_persist_worker():
+    async def go():
+        consumer = PersistConsumer(streams.redis_factory(), consumer_name="test")
+        await consumer.ensure_group()
+        await consumer.run_once(block_ms=1)
+    asyncio.run(go())
 
+
+def test_health_and_ready(client):
+    assert client.get("/health").json()["status"] == "healthy"
+    ready = client.get("/ready")
+    assert ready.status_code == 200 and ready.json()["checks"] == {"redis": "ok", "database": "ok"}
+
+
+def test_telemetry_flows_socket_to_stream_to_db_to_dashboard(client, sync_redis):
     with client.websocket_connect("/ws/dashboard") as dashboard:
-        with client.websocket_connect("/ws/agent/agent-test-1") as agent:
-            agent.send_json(sample)
-            # The dashboard broadcast happens after the DB write, so it doubles as a sync point.
-            update = dashboard.receive_json()
-            while update["type"] != "metrics_update":
-                update = dashboard.receive_json()
+        with client.websocket_connect("/ws/agent/agent-t1") as agent:
+            agent.send_json(SAMPLE)
+            wait_for(lambda: stream_len(sync_redis) == 1)
+        # Nothing is stored by the API itself...
+        assert client.get("/api/v1/metrics/agent-t1/latest").status_code == 404
+        # ...until a persist worker consumes the stream.
+        run_persist_worker()
+        update = dashboard.receive_json()
 
-    assert update["agent_id"] == "agent-test-1"
-    assert update["metrics"]["cpu_usage"] == 42.5
-
-    agents = client.get("/api/v1/agents/").json()["agents"]
-    assert any(a["agent_id"] == "agent-test-1" for a in agents)
-
-    latest = client.get("/api/v1/metrics/agent-test-1/latest").json()
-    assert latest["cpu_usage"] == 42.5
-    assert latest["memory_usage"] == 61.0
-
-
-def test_latest_metrics_unknown_agent_404(client):
-    assert client.get("/api/v1/metrics/nope/latest").status_code == 404
+    assert update["type"] == "metrics_update" and update["metrics"]["cpu_usage"] == 42.5
+    latest = client.get("/api/v1/metrics/agent-t1/latest").json()
+    assert latest["cpu_usage"] == 42.5 and latest["seq"] == 1
+    assert any(a["agent_id"] == "agent-t1" for a in client.get("/api/v1/agents/").json()["agents"])
+    status = client.get("/api/v1/system/pipeline").json()
+    assert status["groups"]["persist"]["pending"] == 0 and status["dead_letters"] == 0
 
 
-def test_remediate_unconnected_agent_404(client):
+def test_invalid_messages_are_rejected_at_the_edge(client, sync_redis, monkeypatch):
+    monkeypatch.setattr(config, "MAX_MESSAGE_BYTES", 200)
+    with client.websocket_connect("/ws/agent/agent-t1") as agent:
+        agent.send_text("{not json")
+        assert agent.receive_json() == {"type": "error", "reason": "invalid JSON"}
+        agent.send_json({**SAMPLE, "agent_id": "someone-else"})
+        assert "does not match" in agent.receive_json()["reason"]
+        agent.send_json({**SAMPLE, "padding": "x" * 500})
+        assert "exceeds" in agent.receive_json()["reason"]
+    assert stream_len(sync_redis) == 0
+
+
+def test_bad_agent_id_is_refused(redis_server):
+    with TestClient(app) as c, pytest.raises(Exception):
+        with c.websocket_connect("/ws/agent/bad id with spaces"):
+            pass
+
+
+def test_backlog_above_limit_throttles_instead_of_enqueueing(client, sync_redis, monkeypatch):
+    monkeypatch.setattr(config, "PERSIST_MAX_LAG", -1)      # any backlog counts as overload
+    with client.websocket_connect("/ws/agent/agent-t1") as agent:
+        agent.send_json(SAMPLE)
+        reply = agent.receive_json()
+    assert reply["type"] == "throttle" and reply["retry_after_s"] > 0
+    assert stream_len(sync_redis) == 0
+    assert client.get("/api/v1/system/pipeline").json()["admission"]["rejected"] == 1
+
+
+def test_control_messages_are_relayed_not_stored(client, sync_redis):
+    with client.websocket_connect("/ws/dashboard") as dashboard:
+        with client.websocket_connect("/ws/agent/agent-t1") as agent:
+            agent.send_json({"type": "remediation_result", "issue_type": "cpu_threshold_breach",
+                             "success": True})
+            event = dashboard.receive_json()
+    assert event["type"] == "remediation_result" and event["agent_id"] == "agent-t1"
+    assert stream_len(sync_redis) == 0
+
+
+def test_commands_to_unconnected_agents_404(client):
     assert client.post("/api/v1/agents/ghost/remediate").status_code == 404
-
-
-def test_anomaly_detection_handles_real_agent_payload(client):
-    """Regression: nested cpu/memory dicts produce numpy features; `if features:` used to raise."""
-    payload = {
-        "agent_id": "agent-test-2",
-        "cpu_usage": 20.0, "memory_usage": 91.3, "disk_usage": 50.0, "network_latency": 10.0,
-        "cpu": {"usage_percent": 20.0, "load_avg_1m": 0.5, "core_count": 8},
-        "memory": {"usage_percent": 91.3, "swap_usage_percent": 10.0},
-        "disk": {"usage_percent": 50.0},
-        "network": {"latency_ms": 10.0, "bytes_sent_per_sec": 100.0, "bytes_recv_per_sec": 200.0},
-    }
-
-    with client.websocket_connect("/ws/dashboard") as dashboard:
-        with client.websocket_connect("/ws/agent/agent-test-2") as agent:
-            agent.send_json(payload)
-            msg = dashboard.receive_json()
-
-    assert msg["type"] == "anomaly_detected"
-    assert any(a["type"] == "memory_threshold_breach" for a in msg["anomalies"])
+    assert client.get("/api/v1/metrics/nope/latest").status_code == 404

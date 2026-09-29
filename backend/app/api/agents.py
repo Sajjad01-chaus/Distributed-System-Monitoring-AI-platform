@@ -6,7 +6,7 @@ from app.models import Agent
 router = APIRouter()
 
 @router.get("/")
-async def list_agents(db: Session = Depends(get_db)):
+def list_agents(db: Session = Depends(get_db)):
     """Get all agents"""
     agents = db.query(Agent).all()
     

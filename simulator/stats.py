@@ -36,6 +36,8 @@ class StageStats:
     connect_failures: int = 0
     disconnects: int = 0            # unexpected, i.e. not a scripted flap
     flaps: int = 0
+    throttled: int = 0              # server asked us to back off (admission control)
+    server_errors: int = 0          # server rejected a message as invalid
     connected_agents: set = field(default_factory=set)
     sender_lag_s: List[float] = field(default_factory=list)   # scheduled vs actual send time
     generator_loop_lag_s: List[float] = field(default_factory=list)  # the simulator's own event-loop delay
