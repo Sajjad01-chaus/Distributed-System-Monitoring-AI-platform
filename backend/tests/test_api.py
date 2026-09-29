@@ -112,7 +112,8 @@ def test_control_messages_are_relayed_not_stored(client, sync_redis):
 
 
 def test_commands_to_unconnected_agents_404(client):
-    assert client.post("/api/v1/agents/ghost/remediate").status_code == 404
+    from conftest import token_headers
+    assert client.post("/api/v1/agents/ghost/remediate", headers=token_headers(client)).status_code == 404
     assert client.get("/api/v1/metrics/nope/latest").status_code == 404
 
 
@@ -134,3 +135,11 @@ def test_system_status_reports_real_fleet_numbers(client):
     status = client.get("/api/v1/system/status").json()
     assert (status["total_agents"], status["connected_agents"], status["healthy_agents"]) == (3, 2, 1)
     assert status["active_alerts"] == 2 and status["anomalies_24h"] == 2
+
+
+def test_database_url_from_hosting_providers_is_normalized():
+    from app.database import _normalize
+    assert _normalize("postgres://u:p@h:5432/db") == "postgresql+psycopg2://u:p@h:5432/db"
+    assert _normalize("postgresql://u:p@h/db") == "postgresql+psycopg2://u:p@h/db"
+    assert _normalize("postgresql+psycopg2://u:p@h/db") == "postgresql+psycopg2://u:p@h/db"
+    assert _normalize("sqlite:///x.db") == "sqlite:///x.db"

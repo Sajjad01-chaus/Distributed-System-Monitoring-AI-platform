@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from fastapi import WebSocket
 
 from app import config
+from app.pipeline.streams import group_backlog
 
 log = logging.getLogger(__name__)
 
@@ -75,15 +76,7 @@ class Admission:
         return self.persist_lag > config.PERSIST_MAX_LAG
 
     async def refresh(self) -> None:
-        try:
-            groups = await self.redis.xinfo_groups(config.TELEMETRY_STREAM)
-        except aioredis.ResponseError:
-            self.persist_lag = 0  # stream not created yet
-            return
-        for g in groups:
-            if g["name"] == config.PERSIST_GROUP:
-                # lag is None when Redis can't compute it (after deletions); fall back to pending.
-                self.persist_lag = g.get("lag") if g.get("lag") is not None else g.get("pending", 0)
+        self.persist_lag = await group_backlog(self.redis, config.PERSIST_GROUP)
 
     async def run(self) -> None:
         while True:

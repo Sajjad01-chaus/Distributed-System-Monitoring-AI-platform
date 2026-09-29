@@ -6,6 +6,8 @@ from pathlib import Path
 
 _DB = Path(tempfile.mkdtemp(prefix="dsm-test-")) / "test.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB.as_posix()}"
+os.environ.update({"JWT_SECRET": "test-secret-" + "x" * 40, "ADMIN_USERNAME": "admin",
+                   "ADMIN_PASSWORD": "admin-pw", "VIEWER_USERNAME": "viewer", "VIEWER_PASSWORD": "viewer-pw"})
 
 import fakeredis  # noqa: E402
 import pytest  # noqa: E402
@@ -55,3 +57,9 @@ def clean_tables():
     with engine.begin() as conn:
         for table in ("system_metrics", "alerts", "agents"):
             conn.execute(text(f"DELETE FROM {table}"))
+
+
+def token_headers(client, username="admin", password="admin-pw"):
+    resp = client.post("/api/v1/auth/token", json={"username": username, "password": password})
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}

@@ -1,0 +1,14 @@
+# Single-service image for a PaaS free tier (Render): the API with the pipeline workers
+# embedded (EMBEDDED_WORKERS) and an optional synthetic demo fleet (DEMO_AGENTS).
+# Build context: repository root.
+FROM python:3.12-slim
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt
+COPY backend/alembic.ini ./
+COPY backend/migrations ./migrations
+COPY backend/app ./app
+COPY simulator/scenarios.py ./simulator/scenarios.py
+ENV SIMULATOR_DIR=/app/simulator PYTHONUNBUFFERED=1
+# Migrations are idempotent; running them at start keeps a single-instance deploy self-contained.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-graceful-shutdown 10"]

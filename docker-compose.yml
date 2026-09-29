@@ -6,6 +6,12 @@ x-backend: &backend
   environment: &backend-env
     DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}@postgres:5432/${POSTGRES_DB:-system_monitor}
     REDIS_URL: redis://redis:6379/0
+    JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (32+ random chars)}
+    ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+    VIEWER_USERNAME: ${VIEWER_USERNAME:-viewer}
+    VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
+    GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
   volumes:
     - ./backend/app:/app/app
 
@@ -51,11 +57,15 @@ services:
       postgres:
         condition: service_healthy
 
+  # API replicas. Not published directly: all traffic enters through `lb`.
+  # Scale with `docker compose up -d --scale backend=3`; nginx picks new replicas up via DNS.
   backend:
     <<: *backend
-    container_name: system_monitor_api
-    ports:
-      - "8000:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--timeout-graceful-shutdown", "10"]
+    deploy:
+      replicas: 2
+    stop_grace_period: 15s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 5s
@@ -65,6 +75,22 @@ services:
       migrate:
         condition: service_completed_successfully
       redis:
+        condition: service_healthy
+
+  lb:
+    image: nginx:1.29-alpine
+    container_name: system_monitor_lb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/lb-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      backend:
         condition: service_healthy
 
   # Consumer-group workers. Scale independently, e.g. `docker compose up -d --scale worker-persist=3`.
@@ -90,6 +116,40 @@ services:
       redis:
         condition: service_healthy
 
+  # Dashboards straight on TimescaleDB, provisioned as code (grafana/). Read-only DB role.
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: system_monitor_grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"        # read-only viewers without a login
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fleet-overview.json
+      POSTGRES_DB: ${POSTGRES_DB:-system_monitor}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Agent liveness. Two replicas for availability; a Redis lease elects the one that acts.
+  liveness:
+    <<: *backend
+    command: ["python", "-m", "app.worker", "liveness"]
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
   # Load generator; only runs on demand:
   #   docker compose --profile loadtest run --rm fleet --agents 25,50,100 --report /reports/run.json
   fleet:
@@ -97,12 +157,13 @@ services:
     build:
       context: ./simulator
     environment:
-      SIM_URL: ws://backend:8000
+      SIM_URL: ws://lb:8000
+      SIM_AUTH: ${ADMIN_USERNAME:-admin}:${ADMIN_PASSWORD}
       SIM_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-monitor_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-system_monitor}
     volumes:
       - ./docs/benchmarks:/reports
     depends_on:
-      backend:
+      lb:
         condition: service_healthy
 
 volumes:

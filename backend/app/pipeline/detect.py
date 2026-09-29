@@ -12,6 +12,7 @@ DB writes and no dashboard traffic.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -118,15 +119,7 @@ class DetectConsumer(StreamConsumer):
 
         # Database first; Redis state and notifications only once it is committed.
         if opened or resolved:
-            now = datetime.now(timezone.utc)
-            with SessionLocal() as db:
-                for agent, anomaly in opened:
-                    self._open_alert(db, agent, anomaly, now)
-                for agent, kind in resolved:
-                    db.execute(update(Alert).where(Alert.agent_id == agent, Alert.alert_type == kind,
-                                                   Alert.status == "active")
-                               .values(status="resolved", last_seen=now))
-                db.commit()
+            await asyncio.to_thread(self._write_alerts, opened, resolved)   # off the event loop
 
         pipe = self.redis.pipeline()
         for agent, change in state_updates.items():
@@ -150,6 +143,17 @@ class DetectConsumer(StreamConsumer):
         for agent, kind in resolved:
             await publish(self.redis, {"type": "alert_resolved", "agent_id": agent,
                                        "alert_type": kind, "timestamp": ts})
+
+    def _write_alerts(self, opened, resolved) -> None:
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            for agent, anomaly in opened:
+                self._open_alert(db, agent, anomaly, now)
+            for agent, kind in resolved:
+                db.execute(update(Alert).where(Alert.agent_id == agent, Alert.alert_type == kind,
+                                               Alert.status == "active")
+                           .values(status="resolved", last_seen=now))
+            db.commit()
 
     @staticmethod
     def _open_alert(db, agent: str, anomaly: Dict[str, Any], now: datetime) -> None:

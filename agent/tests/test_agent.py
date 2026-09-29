@@ -86,3 +86,14 @@ def test_env_overrides_config(tmp_path, monkeypatch):
 
 async def _async(value):
     return value
+
+
+@pytest.mark.asyncio
+async def test_results_echo_command_id_and_unknown_actions_still_answer(agent):
+    await agent.process_command({"type": "remediate", "issue_type": "cpu_threshold_breach", "command_id": "c1"})
+    await agent.process_command({"type": "remediate", "issue_type": "format_all_disks", "command_id": "c2"})
+
+    first, second = agent.websocket.sent
+    assert first["command_id"] == "c1" and first["success"] is True
+    assert second["command_id"] == "c2" and second["success"] is False
+    assert "no allowlisted action" in second["output"]["reason"]

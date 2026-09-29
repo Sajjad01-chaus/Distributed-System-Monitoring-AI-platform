@@ -1,0 +1,182 @@
+{
+  "generated_at": "2026-09-29T14:04:38Z",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "cpu_count": 12
+  },
+  "args": {
+    "url": "ws://lb:8000",
+    "agents": "300",
+    "interval": 1.0,
+    "duration": 150.0,
+    "ramp_up": 10.0,
+    "drain": 20.0,
+    "cooldown": 180,
+    "api_url": null,
+    "commands_per_s": 5.0,
+    "mix": null,
+    "seed": "42",
+    "report": "/reports/phase3-steady.json",
+    "run_prefix": "p3steady"
+  },
+  "stages": [
+    {
+      "run_id": "p3steady5212ecs0n300",
+      "agents": 300,
+      "interval_s": 1.0,
+      "target_msgs_per_s": 300.0,
+      "send_window_s": 160.2,
+      "sent_unique": 46528,
+      "sent_frames": 46806,
+      "achieved_send_rate": 290.5,
+      "delivered_unique": 46528,
+      "delivered_rate": 290.5,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 278,
+      "duplicates_delivered": 0,
+      "reordered": 241,
+      "throttled": 0,
+      "reconnect_gap_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      },
+      "commands": {
+        "issued": 740,
+        "by_http_status": {
+          "202": 738,
+          "404": 2
+        },
+        "received_by_agents": 739,
+        "completed": 738,
+        "ack_ms": {
+          "count": 738,
+          "p50": 8.7,
+          "p95": 24.2,
+          "p99": 72.1,
+          "max": 588.4
+        },
+        "completion_ms": {
+          "count": 738,
+          "p50": 9.3,
+          "p95": 27.4,
+          "p99": 137.7,
+          "max": 590.3
+        }
+      },
+      "server_errors": 0,
+      "persisted_rows": 46528,
+      "e2e_latency_ms": {
+        "count": 46528,
+        "p50": 24.2,
+        "p95": 265.1,
+        "p99": 1317.5,
+        "max": 2471.1
+      },
+      "api_probe_ms": {
+        "count": 180,
+        "p50": 4.0,
+        "p95": 11.4,
+        "p99": 41.5,
+        "max": 84.2
+      },
+      "api_probe_errors": 0,
+      "send_call_ms": {
+        "count": 46806,
+        "p50": 0.2,
+        "p95": 0.4,
+        "p99": 0.7,
+        "max": 32.4
+      },
+      "sender_lag_ms": {
+        "count": 46530,
+        "p50": 0.7,
+        "p95": 1.6,
+        "p99": 4.3,
+        "max": 37.4
+      },
+      "generator_loop_lag_ms": {
+        "count": 1796,
+        "p50": 0.7,
+        "p95": 1.6,
+        "p99": 4.9,
+        "max": 29.0
+      },
+      "agents_connected": 300,
+      "connects": 448,
+      "connect_failures": 0,
+      "disconnects": 0,
+      "flaps": 148,
+      "anomalies": {
+        "fleet_outlier": 19,
+        "memory_leak_pattern": 109,
+        "cpu_threshold_breach": 110,
+        "network_latency_degradation": 15,
+        "disk_full_forecast": 12,
+        "memory_threshold_breach": 96,
+        "network_latency_high": 12,
+        "disk_threshold_breach": 12
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 18,
+            "detected": 18,
+            "recall": 1.0
+          },
+          "memory_leak": {
+            "hosts": 18,
+            "detected": 18,
+            "recall": 1.0
+          },
+          "disk_fill": {
+            "hosts": 12,
+            "detected": 12,
+            "recall": 1.0
+          },
+          "network_degradation": {
+            "hosts": 12,
+            "detected": 12,
+            "recall": 1.0
+          }
+        },
+        "healthy_hosts": 240,
+        "healthy_flagged": 2,
+        "false_positive_rate": 0.008
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.1,
+      "pipeline_after_drain": {
+        "stream_length": 370329,
+        "groups": {
+          "detect": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 5
+          },
+          "persist": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 5
+          }
+        },
+        "dead_letters": 0,
+        "admission": {
+          "replica": "aef6630f81bc-1",
+          "overloaded": false,
+          "persist_lag": 0,
+          "accepted": 15525,
+          "rejected": 0,
+          "max_lag": 50000
+        }
+      },
+      "generator_saturated": false,
+      "clock_skew_s": 0.2,
+      "stall_detected": false
+    }
+  ]
+}

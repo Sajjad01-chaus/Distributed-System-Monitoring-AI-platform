@@ -21,6 +21,7 @@ import random
 import secrets
 import sys
 import time
+import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,8 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from scenarios import SyntheticHost, assign_scenarios, detection_quality, parse_mix
 from stats import StageStats, summarize_ms
 
+COMMAND_GRACE_S = 2.0
+SECRET_ARGS = {"database_url", "auth"}
 CONNECT_ERRORS = (OSError, asyncio.TimeoutError, WebSocketException)
 
 
@@ -43,7 +46,13 @@ async def _drain(ws, stats: StageStats, backoff: Dict[str, float]) -> None:
                 msg = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            if msg.get("type") == "throttle":
+            if msg.get("command_id"):
+                # Behave like the real agent: execute (here: pretend to) and report back.
+                stats.commands_received += 1
+                await ws.send(json.dumps({"type": "remediation_result", "command_id": msg["command_id"],
+                                          "issue_type": msg.get("issue_type"), "success": True,
+                                          "dry_run": True, "simulated": True}))
+            elif msg.get("type") == "throttle":
                 stats.throttled += 1
                 backoff["until"] = time.monotonic() + float(msg.get("retry_after_s", 5))
             elif msg.get("type") == "error":
@@ -59,6 +68,7 @@ async def run_agent(host: SyntheticHost, args, run_id: str, stats: StageStats,
     uri = f"{args.url}/ws/agent/{host.agent_id}"
     backoff = 0.5
     held: Optional[str] = None  # out_of_order: a frame deliberately sent late
+    lost_at: Optional[float] = None  # when the last connection dropped (for reconnect gaps)
 
     while not stop.is_set():
         try:
@@ -71,6 +81,9 @@ async def run_agent(host: SyntheticHost, args, run_id: str, stats: StageStats,
 
         stats.connects += 1
         stats.connected_agents.add(host.agent_id)
+        if lost_at is not None:
+            stats.reconnect_gap_s.append(time.monotonic() - lost_at)
+            lost_at = None
         backoff = 0.5
         throttle = {"until": 0.0}
         drainer = asyncio.create_task(_drain(ws, stats, throttle))
@@ -118,6 +131,7 @@ async def run_agent(host: SyntheticHost, args, run_id: str, stats: StageStats,
         except ConnectionClosed:
             stats.disconnects += 1
             stats.send_errors += 1
+            lost_at = time.monotonic()
         finally:
             drainer.cancel()
             try:
@@ -149,6 +163,13 @@ async def run_observer(args, run_id: str, stats: StageStats, ready: asyncio.Even
                         sim = (msg.get("metrics") or {}).get("_sim") or {}
                         if sim.get("run_id") == run_id:
                             stats.record_delivery(sim["msg_id"], received - sim["sent_at"])
+                    elif kind == "remediation_result" and msg.get("command_id"):
+                        cid = msg["command_id"]
+                        if cid in stats.pending_commands:
+                            stats.command_complete_s.append(time.monotonic() - stats.pending_commands.pop(cid))
+                        else:
+                            # The agent can answer before our POST even returns the id: keep it.
+                            stats.early_results[cid] = time.monotonic()
                     elif kind == "anomaly_detected" and str(msg.get("agent_id", "")).startswith(prefix):
                         seen = stats.anomalies_by_agent.setdefault(msg["agent_id"], set())
                         for a in msg.get("anomalies", []):
@@ -203,6 +224,51 @@ async def wait_until_idle(args) -> float:
     return time.time() - start
 
 
+async def run_commander(args, hosts, stats: StageStats, stop: asyncio.Event, rng: random.Random) -> None:
+    """Issue remediation commands through the API (i.e. the load balancer) at a fixed rate to
+    random connected agents. Each lands on an arbitrary replica and must be routed to the one
+    holding the agent's socket."""
+    if not args.commands_per_s:
+        return
+    base = (args.api_url or _http_base(args)).rstrip("/")
+    headers = {}
+    if args.auth:   # commands need an admin token
+        user, _, password = args.auth.partition(":")
+        login = urllib.request.Request(f"{base}/api/v1/auth/token", method="POST",
+                                       data=json.dumps({"username": user, "password": password}).encode(),
+                                       headers={"Content-Type": "application/json"})
+        token = await asyncio.to_thread(lambda: json.loads(urllib.request.urlopen(login, timeout=10).read()))
+        headers["Authorization"] = f"Bearer {token['access_token']}"
+
+    def post(agent_id: str):
+        req = urllib.request.Request(f"{base}/api/v1/agents/{agent_id}/remediate?issue_type=cpu_threshold_breach",
+                                     method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception:
+            return 0, None
+
+    while not stop.is_set():
+        connected = [h.agent_id for h in hosts if h.agent_id in stats.connected_agents]
+        if connected:
+            agent_id = rng.choice(connected)
+            t0 = time.monotonic()
+            code, body = await asyncio.to_thread(post, agent_id)
+            stats.commands_issued += 1
+            stats.command_status[str(code)] += 1
+            if code == 202 and body:
+                stats.command_ack_s.append(time.monotonic() - t0)
+                cid = body["command_id"]
+                if cid in stats.early_results:
+                    stats.command_complete_s.append(stats.early_results.pop(cid) - t0)
+                else:
+                    stats.pending_commands[cid] = t0
+        await asyncio.sleep(1 / args.commands_per_s)
+
+
 async def run_probe(args, stats: StageStats, done: asyncio.Event) -> None:
     """GET /health once a second. It does no I/O, so its latency is pure event-loop delay."""
     url = args.url.replace("ws://", "http://").replace("wss://", "https://") + "/health"
@@ -249,17 +315,23 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
     probe = asyncio.create_task(run_probe(args, stats, done))
     monitor = asyncio.create_task(run_loop_monitor(stats, done))
 
+    # Commands stop a little before the agents do, so no command is measured against an agent
+    # that is shutting down (its result would be cut off with the socket).
+    cmd_stop = asyncio.Event()
+    commander = asyncio.create_task(run_commander(args, hosts, stats, cmd_stop, random.Random(f"{args.seed}:cmd")))
     started = time.time()
     started_mono = time.monotonic()
     agents = [asyncio.create_task(run_agent(h, args, run_id, stats, stop,
                                             start_delay=args.ramp_up * i / max(1, n_agents)))
               for i, h in enumerate(hosts)]
-    await asyncio.sleep(args.ramp_up + args.duration)
+    await asyncio.sleep(max(0.0, args.ramp_up + args.duration - COMMAND_GRACE_S))
+    cmd_stop.set()
+    await asyncio.sleep(min(COMMAND_GRACE_S, args.ramp_up + args.duration))
     stop.set()
     send_window = time.time() - started
     # Wall clock jumping ahead of the monotonic clock means the machine/VM was suspended mid-stage.
     clock_skew = send_window - (time.monotonic() - started_mono)
-    await asyncio.wait(agents, timeout=15)
+    await asyncio.wait(agents + [commander], timeout=15)
     for t in agents:
         t.cancel()
 
@@ -288,6 +360,12 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
         "duplicates_delivered": stats.duplicates_delivered,
         "reordered": stats.reordered,
         "throttled": stats.throttled,
+        "reconnect_gap_ms": summarize_ms(stats.reconnect_gap_s),
+        "commands": {"issued": stats.commands_issued, "by_http_status": dict(stats.command_status),
+                     "received_by_agents": stats.commands_received,
+                     "completed": len(stats.command_complete_s),
+                     "ack_ms": summarize_ms(stats.command_ack_s),
+                     "completion_ms": summarize_ms(stats.command_complete_s)},
         "server_errors": stats.server_errors,
         "persisted_rows": persisted,
         "e2e_latency_ms": summarize_ms(stats.e2e_latency_s),
@@ -320,6 +398,9 @@ async def run_stage(args, n_agents: int, stage_idx: int) -> Dict[str, Any]:
 
 
 def print_table(results: List[Dict[str, Any]]) -> None:
+    if not results:
+        print("(no stages)")
+        return
     cols = [("agents", "agents"), ("connected", "agents_connected"), ("target/s", "target_msgs_per_s"),
             ("sent/s", "achieved_send_rate"),
             ("delivered/s", "delivered_rate"), ("delivery", "delivery_ratio"), ("persisted", "persisted_rows")]
@@ -347,6 +428,13 @@ def parse_args(argv=None):
     p.add_argument("--drain", type=float, default=10, help="seconds to wait for in-flight messages after sending")
     p.add_argument("--cooldown", type=float, default=180,
                    help="max seconds to wait for the backend to go idle before each stage")
+    p.add_argument("--api-url", default=None,
+                   help="HTTP base for issued commands (default: derived from --url); lets a test "
+                        "issue commands on a different replica than the agents are connected to")
+    p.add_argument("--auth", default=os.getenv("SIM_AUTH"),
+                   help="user:password of an admin, used to obtain a token for issuing commands")
+    p.add_argument("--commands-per-s", type=float, default=0,
+                   help="issue remediation commands through the API at this rate during each stage")
     p.add_argument("--mix", default=None, help="scenario weights, e.g. normal=0.8,memory_leak=0.2")
     p.add_argument("--seed", default="42", help="seed for reproducible fleets")
     p.add_argument("--database-url", default=os.getenv("SIM_DATABASE_URL"),
@@ -375,7 +463,8 @@ def main(argv=None) -> List[Dict[str, Any]]:
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "environment": {"python": platform.python_version(), "platform": platform.platform(),
                             "cpu_count": os.cpu_count()},
-            "args": {k: v for k, v in vars(args).items() if k != "database_url"},
+            # Never record credentials in a report that gets committed.
+            "args": {k: v for k, v in vars(args).items() if k not in SECRET_ARGS},
             "stages": results,
         }
         os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)

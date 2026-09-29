@@ -1,22 +1,25 @@
-"""API process: accepts agent telemetry onto the stream, serves REST, relays dashboard events.
+"""API replica: accepts agent telemetry onto the stream, routes commands, serves REST, relays
+dashboard events. Several replicas run behind a load balancer (see docker-compose.yml, nginx/).
 
 Nothing slow happens on the request path: persistence and anomaly detection run in separate
 worker processes (app.worker) that consume the Redis stream. See docs/architecture.md.
 """
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Dict
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import RedisError
 from sqlalchemy import func, select, text
 
-from app import config
+from app import auth, config, embedded
 from app.api import agents, alerts, metrics
 from app.api.utils.logger import setup_logger
+from app.control import CommandBus, Presence
 from app.database import SessionLocal
 from app.models import Agent, Alert
 from app.pipeline import streams
@@ -27,14 +30,12 @@ logger = setup_logger()
 
 # Close codes (RFC 6455 / IANA registry)
 WS_POLICY_VIOLATION = 1008
+WS_SERVICE_RESTART = 1012   # "reconnect now": sent to agents when this replica shuts down
 WS_TRY_AGAIN_LATER = 1013
-# An agent that hasn't reported for this long isn't counted as connected (3x the default interval).
-AGENT_STALE_S = 90
 
 
 class AgentConnections:
-    """Agent sockets held by *this* process, used to push commands. Cross-replica command
-    routing is Phase 3; until then a command only reaches agents connected to this replica."""
+    """Agent sockets held by *this* replica. Other replicas reach them via the CommandBus."""
 
     def __init__(self):
         self.sockets: Dict[str, WebSocket] = {}
@@ -50,43 +51,20 @@ class AgentConnections:
             self.sockets.pop(agent_id, None)
             return False
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Starting System Monitor API...")
-    redis = streams.redis_factory()
-    app.state.redis = redis
-    app.state.hub = DashboardHub(redis)
-    app.state.admission = Admission(redis)
-    app.state.agents = AgentConnections()
-    tasks = [asyncio.create_task(app.state.hub.run()), asyncio.create_task(app.state.admission.run())]
-    logger.info("System Monitor API started")
-    yield
-    for t in tasks:
-        t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    await redis.aclose()
-    logger.info("System Monitor API stopped")
-
-
-app = FastAPI(
-    title="System Monitor & Auto-Healing Platform",
-    description="AI-powered system monitoring with intelligent auto-remediation",
-    version="2.0.0",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    async def close_all(self, code: int) -> None:
+        for ws in list(self.sockets.values()):
+            try:
+                await ws.close(code=code)
+            except Exception:
+                pass
+        self.sockets.clear()
 
 
 # --- WebSockets ---------------------------------------------------------------------
-@app.websocket("/ws/dashboard")
+ws_router = APIRouter()
+
+
+@ws_router.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
     await websocket.accept()
     hub: DashboardHub = websocket.app.state.hub
@@ -102,7 +80,7 @@ async def dashboard_websocket(websocket: WebSocket):
         hub.discard(websocket)
 
 
-@app.websocket("/ws/agent/{agent_id}")
+@ws_router.websocket("/ws/agent/{agent_id}")
 async def agent_websocket(websocket: WebSocket, agent_id: str):
     if not AGENT_ID_RE.match(agent_id):
         await websocket.close(code=WS_POLICY_VIOLATION)
@@ -110,7 +88,9 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
     await websocket.accept()
     state = websocket.app.state
     state.agents.sockets[agent_id] = websocket
-    logger.info("Agent %s connected", agent_id)
+    await state.presence.claim(agent_id)
+    presence_refreshed = time.monotonic()
+    logger.info("Agent %s connected to %s", agent_id, state.replica)
     try:
         while True:
             raw = await websocket.receive_text()
@@ -122,7 +102,9 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
 
             if "type" in payload:
                 # Control traffic (remediation results, config acks, pongs) isn't telemetry:
-                # relay it to dashboards instead of storing it as a metrics sample.
+                # record command outcomes, then relay to dashboards instead of storing a sample.
+                if payload.get("command_id"):
+                    await state.commands.record_result(agent_id, payload)
                 await streams.publish(state.redis, {**payload, "agent_id": agent_id})
                 continue
 
@@ -133,6 +115,10 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
                 continue
             await streams.enqueue(state.redis, agent_id, raw)
             state.admission.accepted += 1
+            # Keep presence alive without an extra write per message: refresh a few times per TTL.
+            if time.monotonic() - presence_refreshed > config.PRESENCE_TTL_S / 3:
+                await state.presence.refresh(agent_id)
+                presence_refreshed = time.monotonic()
     except WebSocketDisconnect:
         pass
     except RedisError as e:
@@ -141,28 +127,35 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
     finally:
         if state.agents.sockets.get(agent_id) is websocket:
             del state.agents.sockets[agent_id]
-        logger.info("Agent %s disconnected", agent_id)
+            try:
+                await state.presence.release(agent_id)
+            except RedisError:
+                pass   # TTL expires it
+        logger.info("Agent %s disconnected from %s", agent_id, state.replica)
 
 
 # --- health -------------------------------------------------------------------------
-@app.get("/")
-async def root():
-    return {"message": "System Monitor & Auto-Healing Platform API", "version": app.version,
-            "status": "operational"}
+health_router = APIRouter()
 
 
-@app.get("/health")
+@health_router.get("/")
+async def root(request: Request):
+    return {"message": "System Monitor & Auto-Healing Platform API", "version": request.app.version,
+            "status": "operational", "replica": request.app.state.replica}
+
+
+@health_router.get("/health")
 async def health_check():
     """Liveness: the process is up and its event loop is responsive. No I/O on purpose."""
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-@app.get("/ready")
-async def readiness():
+@health_router.get("/ready")
+async def readiness(request: Request):
     """Readiness: dependencies reachable. A load balancer should only route here when 200."""
     checks = {}
     try:
-        await app.state.redis.ping()
+        await request.app.state.redis.ping()
         checks["redis"] = "ok"
     except Exception as e:
         checks["redis"] = f"error: {e}"
@@ -174,82 +167,157 @@ async def readiness():
         checks["database"] = "ok"
     except Exception as e:
         checks["database"] = f"error: {e}"
-    ok = all(v == "ok" for v in checks.values())
-    if not ok:
+    if not all(v == "ok" for v in checks.values()):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=checks)
     return {"status": "ready", "checks": checks}
 
 
-# --- REST ---------------------------------------------------------------------------
-app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["Metrics"])
-app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
-app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
+# --- control plane ------------------------------------------------------------------
+control_router = APIRouter()
+
+_COMMAND_HTTP_STATUS = {"delivered": 202, "not_connected": 404, "undeliverable": 503, "unacknowledged": 504}
 
 
-@app.post("/api/v1/agents/{agent_id}/restart")
-async def restart_agent(agent_id: str):
-    """Send restart command to specific agent"""
-    if await app.state.agents.send(agent_id, {"type": "restart",
-                                              "timestamp": datetime.now(timezone.utc).isoformat()}):
-        return {"message": f"Restart command sent to agent {agent_id}"}
-    raise HTTPException(status_code=404, detail=f"Agent {agent_id} not connected")
+async def _command(request: Request, agent_id: str, command: dict):
+    result = await request.app.state.commands.send(agent_id, command)
+    code = _COMMAND_HTTP_STATUS[result["status"]]
+    if code >= 400:
+        raise HTTPException(status_code=code, detail=result)
+    return result
 
 
-@app.post("/api/v1/agents/{agent_id}/remediate")
-async def trigger_remediation(agent_id: str, issue_type: str = "general"):
-    """Trigger an allowlisted remediation action on an agent"""
-    if await app.state.agents.send(agent_id, {"type": "remediate", "issue_type": issue_type,
-                                              "timestamp": datetime.now(timezone.utc).isoformat()}):
-        return {"message": f"Remediation triggered for {issue_type} on agent {agent_id}"}
-    raise HTTPException(status_code=404, detail=f"Agent {agent_id} not connected")
+ADMIN = [Depends(auth.require("admin"))]
+VIEWER = [Depends(auth.require("viewer"))]
 
 
-@app.get("/api/v1/system/pipeline")
-async def pipeline_status():
-    """Backlog per consumer group, dead-letter count and admission counters."""
-    redis = app.state.redis
+@control_router.post("/api/v1/agents/{agent_id}/restart", status_code=202, dependencies=ADMIN)
+async def restart_agent(request: Request, agent_id: str):
+    """Restart an agent, wherever (on whichever replica) it is connected"""
+    return await _command(request, agent_id, {"type": "restart"})
+
+
+@control_router.post("/api/v1/agents/{agent_id}/remediate", status_code=202, dependencies=ADMIN)
+async def trigger_remediation(request: Request, agent_id: str, issue_type: str = "general"):
+    """Trigger an allowlisted remediation action on an agent, wherever it is connected"""
+    return await _command(request, agent_id, {"type": "remediate", "issue_type": issue_type})
+
+
+@control_router.get("/api/v1/commands/{command_id}", dependencies=VIEWER)
+async def command_status(request: Request, command_id: str):
+    """Lifecycle of a command: pending -> delivered -> completed (with the agent's result)"""
+    record = await request.app.state.commands.get(command_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired command")
+    if "result" in record:
+        record["result"] = json.loads(record["result"])
+    return record
+
+
+@control_router.get("/api/v1/system/pipeline")
+async def pipeline_status(request: Request):
+    """Backlog per consumer group, dead-letter count and this replica's admission counters."""
+    state = request.app.state
     try:
-        groups = await redis.xinfo_groups(config.TELEMETRY_STREAM)
-        length = await redis.xlen(config.TELEMETRY_STREAM)
+        groups = await state.redis.xinfo_groups(config.TELEMETRY_STREAM)
+        length = await state.redis.xlen(config.TELEMETRY_STREAM)
     except RedisError:
         groups, length = [], 0
     return {
         "stream_length": length,
         "groups": {g["name"]: {"lag": g.get("lag"), "pending": g.get("pending"),
                                "consumers": g.get("consumers")} for g in groups},
-        "dead_letters": await redis.xlen(config.DLQ_STREAM),
-        "admission": {"overloaded": app.state.admission.overloaded,
-                      "persist_lag": app.state.admission.persist_lag,
-                      "accepted": app.state.admission.accepted,
-                      "rejected": app.state.admission.rejected,
-                      "max_lag": config.PERSIST_MAX_LAG},
+        "dead_letters": await state.redis.xlen(config.DLQ_STREAM),
+        "admission": {"replica": state.replica, "overloaded": state.admission.overloaded,
+                      "persist_lag": state.admission.persist_lag, "accepted": state.admission.accepted,
+                      "rejected": state.admission.rejected, "max_lag": config.PERSIST_MAX_LAG},
     }
 
 
-@app.get("/api/v1/system/status")
-def system_status():
+@control_router.get("/api/v1/system/status")
+def system_status(request: Request):
     """Fleet-wide status from the database (identical on every replica), plus this replica's
     own connection counts. Sync handler: runs in the threadpool, off the event loop."""
+    state = request.app.state
     now = datetime.now(timezone.utc)
+    stale = now - timedelta(seconds=config.AGENT_STALE_S)
     with SessionLocal() as db:
         total = db.scalar(select(func.count()).select_from(Agent))
-        reporting = db.scalar(select(func.count()).select_from(Agent)
-                              .where(Agent.last_seen >= now - timedelta(seconds=AGENT_STALE_S)))
+        reporting = db.scalar(select(func.count()).select_from(Agent).where(Agent.last_seen >= stale))
         active = db.scalar(select(func.count()).select_from(Alert).where(Alert.status == "active"))
-        live = select(Agent.agent_id).where(Agent.last_seen >= now - timedelta(seconds=AGENT_STALE_S))
+        live = select(Agent.agent_id).where(Agent.last_seen >= stale)
         unhealthy = db.scalar(select(func.count(func.distinct(Alert.agent_id)))
                               .where(Alert.status == "active", Alert.severity.in_(("high", "critical")),
                                      Alert.agent_id.in_(live)))   # silent agents aren't "unhealthy", just gone
+        offline = db.scalar(select(func.count()).select_from(Agent).where(Agent.status == "offline"))
         last_24h = db.scalar(select(func.count()).select_from(Alert)
                              .where(Alert.first_seen >= now - timedelta(hours=24)))
     return {
         "total_agents": total,
         "connected_agents": reporting,                       # reported within AGENT_STALE_S
         "healthy_agents": max(reporting - unhealthy, 0),
+        "offline_agents": offline,
         "active_alerts": active,
         "anomalies_24h": last_24h,
-        "system_health": "degraded" if app.state.admission.overloaded else "operational",
-        "this_replica": {"agent_sockets": len(app.state.agents.sockets),
-                         "dashboard_sockets": len(app.state.hub.sockets)},
+        "system_health": "degraded" if state.admission.overloaded else "operational",
+        "this_replica": {"id": state.replica, "agent_sockets": len(state.agents.sockets),
+                         "dashboard_sockets": len(state.hub.sockets)},
         "last_updated": now.isoformat(),
     }
+
+
+# --- app factory --------------------------------------------------------------------
+def create_app(replica_id: str | None = None) -> FastAPI:
+    """One FastAPI app per replica. Tests build two to exercise cross-replica behaviour."""
+    replica = replica_id or config.REPLICA_ID
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        redis = streams.redis_factory()
+        state = app.state
+        state.replica = replica
+        state.redis = redis
+        state.hub = DashboardHub(redis)
+        state.admission = Admission(redis)
+        state.agents = AgentConnections()
+        state.presence = Presence(redis, replica)
+        state.commands = CommandBus(redis, replica)
+        tasks = [asyncio.create_task(state.hub.run()), asyncio.create_task(state.admission.run()),
+                 asyncio.create_task(state.commands.listen(state.agents.send))]
+        tasks += embedded.start(redis)   # no-op unless EMBEDDED_WORKERS / DEMO_AGENTS are set
+        logger.info("API replica %s started", replica)
+        yield
+        # Tell agents to reconnect now (the load balancer sends them to a surviving replica)
+        # rather than letting them discover a dead socket on their next send.
+        await state.agents.close_all(WS_SERVICE_RESTART)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await redis.aclose()
+        logger.info("API replica %s stopped", replica)
+
+    app = FastAPI(title="System Monitor & Auto-Healing Platform",
+                  description="AI-powered system monitoring with intelligent auto-remediation",
+                  version="3.0.0", lifespan=lifespan)
+    # Auth is a bearer header, not a cookie, so credentials mode isn't needed. In production set
+    # CORS_ORIGINS to the dashboard's origin(s), comma-separated.
+    origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]
+    app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
+                       allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
+
+    @app.middleware("http")
+    async def replica_header(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Replica-Id"] = replica   # makes load balancing observable
+        return response
+
+    app.include_router(ws_router)
+    app.include_router(health_router)
+    app.include_router(control_router)
+    app.include_router(auth.router, tags=["Auth"])
+    app.include_router(metrics.router, prefix="/api/v1/metrics", tags=["Metrics"])
+    app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agents"])
+    app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
+    return app
+
+
+app = create_app()

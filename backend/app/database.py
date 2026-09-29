@@ -4,7 +4,16 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # No default: credentials come from the environment (.env via docker compose), never from code.
-DATABASE_URL = os.environ["DATABASE_URL"]
+def _normalize(url: str) -> str:
+    """Hosting providers hand out postgres:// or postgresql:// URLs. SQLAlchemy 2.1 maps the bare
+    scheme to psycopg (v3), which isn't installed, so name the driver we ship explicitly."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg2://" + url[len(prefix):]
+    return url
+
+
+DATABASE_URL = _normalize(os.environ["DATABASE_URL"])
 
 # SQLite (used by the test suite) needs cross-thread access for FastAPI's threadpool, and a busy
 # timeout because API and workers write from separate processes.

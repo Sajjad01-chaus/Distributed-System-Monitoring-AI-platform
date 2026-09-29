@@ -1,0 +1,11 @@
+# Keep build contexts small (the dashboard's node_modules alone is hundreds of MB).
+.git
+.venv
+**/__pycache__
+**/.pytest_cache
+dashboard
+docs
+grafana
+nginx
+agent
+.env
