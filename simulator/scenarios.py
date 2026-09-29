@@ -186,11 +186,15 @@ class SyntheticHost:
 
 # Which backend anomaly types count as "caught it" for each injected scenario. Hosts whose
 # scenario is transport-only behave like normal hosts telemetry-wise.
+# Phase 1 engine types (cpu_trend_anomaly) and Phase 2 types are both listed so reports from
+# either backend score the same way. fleet_outlier is a generic "this host is odd" signal
+# and counts as a catch for any injected fault.
 EXPECTED_DETECTIONS = {
-    "cpu_spike": {"cpu_threshold_breach", "cpu_trend_anomaly"},
-    "memory_leak": {"memory_leak_pattern", "memory_threshold_breach"},
-    "disk_fill": {"disk_threshold_breach"},
-    "network_degradation": {"network_latency_high"},
+    "cpu_spike": {"cpu_threshold_breach", "cpu_trend_anomaly", "fleet_outlier"},
+    "memory_leak": {"memory_leak_pattern", "memory_threshold_breach", "fleet_outlier"},
+    "disk_fill": {"disk_threshold_breach", "disk_full_forecast", "fleet_outlier"},
+    "network_degradation": {"network_latency_high", "network_latency_degradation", "packet_loss_high",
+                            "fleet_outlier"},
 }
 
 

@@ -1,6 +1,6 @@
 """Delivery guarantees of the stream consumers, tested directly against fakeredis + SQLite."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -17,7 +17,8 @@ from app.pipeline.streams import enqueue, parse_entry
 
 
 def sample(seq=1, boot="boot-a", agent="agent-1", mem=40.0, **extra):
-    return {"agent_id": agent, "boot_id": boot, "seq": seq, "timestamp": "2026-09-29T10:00:00+00:00",
+    ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc) + timedelta(seconds=10 * seq)
+    return {"agent_id": agent, "boot_id": boot, "seq": seq, "timestamp": ts.isoformat(),
             "cpu_usage": 10.0, "memory_usage": mem, "disk_usage": 20.0, "network_latency": 5.0,
             "platform": {"system": "Linux", "node": "host-1"}, **extra}
 
@@ -189,15 +190,57 @@ def test_untrusted_agent_clock_is_clamped():
 
 
 @pytest.mark.asyncio
-async def test_detect_persists_alerts_and_counts_repeats(redis_client):
-    for seq, mem in ((1, 91.3), (2, 92.0)):
-        await send(redis_client, sample(seq=seq, mem=mem, memory={"usage_percent": mem}))
-    await send(redis_client, sample(seq=2, mem=92.0, memory={"usage_percent": 92.0}))   # duplicate
-    await drain(DetectConsumer(redis_client, consumer_name="d1"))
+async def test_alert_lifecycle_opens_on_transition_and_resolves_with_hysteresis(redis_client, monkeypatch):
+    monkeypatch.setattr(config, "DETECT_CLEAR_AFTER", 2)
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(config.DASHBOARD_CHANNEL)
+    detect = DetectConsumer(redis_client, consumer_name="d1")
+
+    def alerts():
+        with SessionLocal() as db:
+            return db.scalars(select(Alert).where(Alert.alert_type == "memory_threshold_breach")).all()
+
+    for seq in (1, 2, 3):
+        await send(redis_client, sample(seq=seq, mem=95.0))
+    await drain(detect)
+    [alert] = alerts()
+    assert alert.status == "active" and alert.occurrences == 1
+    assert [e["type"] for e in await collect(pubsub)] == ["anomaly_detected"]
+
+    await send(redis_client, sample(seq=3, mem=95.0))     # duplicate
+    await send(redis_client, sample(seq=4, mem=95.0))     # still firing
+    await drain(detect)
+    assert [a.occurrences for a in alerts()] == [1], "steady firing is not a new alert"
+    assert await collect(pubsub) == [], "and causes no dashboard traffic"
+
+    # Recovering: the condition stops holding at seq 7; resolves after 2 clear evaluations.
+    for seq in (5, 6, 7):
+        await send(redis_client, sample(seq=seq, mem=50.0))
+        await drain(detect)
+    assert alerts()[0].status == "active", "one clear evaluation is not enough (hysteresis)"
+    await send(redis_client, sample(seq=8, mem=50.0))
+    await drain(detect)
+    assert alerts()[0].status == "resolved"
+    assert [e["type"] for e in await collect(pubsub)] == ["alert_resolved"]
+
+    # A relapse opens a fresh alert rather than reviving the resolved one.
+    for seq in (9, 10, 11):
+        await send(redis_client, sample(seq=seq, mem=96.0))
+    await drain(detect)
+    assert sorted(a.status for a in alerts()) == ["active", "resolved"]
+
+
+@pytest.mark.asyncio
+async def test_detect_state_is_shared_so_any_worker_can_take_any_agent(redis_client):
+    """Consumer groups spread one agent's messages over workers; the window lives in Redis,
+    so a leak split across two workers is still seen as one continuous trend."""
+    workers = [DetectConsumer(redis_client, consumer_name=f"d{i}") for i in range(2)]
+    for w in workers:
+        await w.ensure_group()
+    for seq in range(1, 13):
+        await send(redis_client, sample(seq=seq, mem=40 + 2.0 * seq))   # +12 %/min
+        await workers[seq % 2].run_once(block_ms=1)
 
     with SessionLocal() as db:
-        alerts = db.scalars(select(Alert).where(Alert.alert_type == "memory_threshold_breach")).all()
-    assert len(alerts) == 1, "one active alert per (agent, type)"
-    assert alerts[0].occurrences == 2, "repeat counted once; the duplicate is ignored"
-    assert alerts[0].status == "active"
-
+        kinds = set(db.scalars(select(Alert.alert_type)).all())
+    assert "memory_leak_pattern" in kinds

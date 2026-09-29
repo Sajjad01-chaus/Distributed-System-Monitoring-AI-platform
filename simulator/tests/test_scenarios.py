@@ -46,7 +46,7 @@ def test_payload_shape_and_bounds(scenario):
 
 
 def test_memory_leak_trips_the_backend_trend_threshold():
-    """ai_engine flags a leak when the fitted slope over 15 samples exceeds 2%/interval."""
+    """The backend's leak detector needs a steady climb: well above 2%/sample over 15 samples."""
     host = SyntheticHost("sim-x-00002", "memory_leak", random.Random(3))
     host.base_mem = host.mem = 30.0
     mem = [host.payload("run")["memory_usage"] for _ in range(15)]

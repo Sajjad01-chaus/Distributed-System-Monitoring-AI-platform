@@ -29,4 +29,8 @@ CLAIM_IDLE_MS = _int("CLAIM_IDLE_MS", 30_000)
 MAX_DELIVERIES = _int("MAX_DELIVERIES", 5)
 DEDUP_TTL_S = _int("DEDUP_TTL_S", 3600)
 
+# Detection: samples kept per agent, and consecutive clear evaluations before an alert resolves.
+DETECT_WINDOW = _int("DETECT_WINDOW", 30)
+DETECT_CLEAR_AFTER = _int("DETECT_CLEAR_AFTER", 5)
+
 CONSUMER_NAME = os.getenv("CONSUMER_NAME", f"{socket.gethostname()}-{os.getpid()}")
