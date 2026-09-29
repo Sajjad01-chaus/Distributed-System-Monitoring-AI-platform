@@ -59,8 +59,21 @@ class StreamConsumer:
             if "BUSYGROUP" not in str(e):
                 raise
 
+    async def reap_idle_consumers(self, max_idle_ms: int = 3_600_000) -> int:
+        """Remove consumers left behind by crashed/replaced workers: idle for an hour and owing
+        nothing. Consumers with pending entries are kept so XAUTOCLAIM can still recover them."""
+        removed = 0
+        for c in await self.redis.xinfo_consumers(self.stream, self.group):
+            if c["name"] != self.consumer and c["pending"] == 0 and c["idle"] >= max_idle_ms:
+                await self.redis.xgroup_delconsumer(self.stream, self.group, c["name"])
+                removed += 1
+        if removed:
+            log.info("%s: reaped %d idle consumers", self.group, removed)
+        return removed
+
     async def run(self) -> None:
         await self.ensure_group()
+        await self.reap_idle_consumers()
         log.info("%s consumer %s started", self.group, self.consumer)
         while not self.stopping:
             try:
@@ -77,6 +90,17 @@ class StreamConsumer:
                 log.warning("%s: transient error, retrying in %.1fs: %s", self.group, self.backoff_s, e)
                 await asyncio.sleep(self.backoff_s)
         log.info("%s consumer %s stopped", self.group, self.consumer)
+
+    async def retire(self) -> bool:
+        """On graceful shutdown, leave the group if we own no pending entries, so the group's
+        consumer list reflects live workers. With pending entries we stay registered: they must
+        remain visible to XAUTOCLAIM so a surviving worker picks them up."""
+        mine = await self.redis.xpending_range(self.stream, self.group, min="-", max="+", count=1,
+                                               consumername=self.consumer)
+        if mine:
+            return False
+        await self.redis.xgroup_delconsumer(self.stream, self.group, self.consumer)
+        return True
 
     async def run_once(self, block_ms: int | None = None) -> int:
         """One poll: re-claim orphaned entries first, otherwise read new ones. Returns count handled."""

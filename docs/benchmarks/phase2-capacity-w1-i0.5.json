@@ -1,0 +1,143 @@
+{
+  "generated_at": "2026-09-29T12:09:16Z",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "cpu_count": 12
+  },
+  "args": {
+    "url": "ws://backend:8000",
+    "agents": "200",
+    "interval": 0.5,
+    "duration": 60.0,
+    "ramp_up": 5.0,
+    "drain": 30.0,
+    "cooldown": 180,
+    "mix": "normal=1",
+    "seed": "42",
+    "report": "/reports/phase2-capacity-w1-i0.5.json",
+    "run_prefix": "cap1w"
+  },
+  "stages": [
+    {
+      "run_id": "cap1wae50bes0n200",
+      "agents": 200,
+      "interval_s": 0.5,
+      "target_msgs_per_s": 400.0,
+      "send_window_s": 65.0,
+      "sent_unique": 25103,
+      "sent_frames": 25103,
+      "achieved_send_rate": 386.2,
+      "delivered_unique": 25103,
+      "delivered_rate": 386.2,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 0,
+      "duplicates_delivered": 0,
+      "reordered": 0,
+      "throttled": 0,
+      "server_errors": 0,
+      "persisted_rows": 25103,
+      "e2e_latency_ms": {
+        "count": 25103,
+        "p50": 15.8,
+        "p95": 23.5,
+        "p99": 38.7,
+        "max": 102.6
+      },
+      "api_probe_ms": {
+        "count": 96,
+        "p50": 2.6,
+        "p95": 3.5,
+        "p99": 41.6,
+        "max": 41.6
+      },
+      "api_probe_errors": 0,
+      "send_call_ms": {
+        "count": 25103,
+        "p50": 0.1,
+        "p95": 0.2,
+        "p99": 0.3,
+        "max": 3.1
+      },
+      "sender_lag_ms": {
+        "count": 25103,
+        "p50": 0.6,
+        "p95": 1.1,
+        "p99": 1.4,
+        "max": 3.3
+      },
+      "generator_loop_lag_ms": {
+        "count": 950,
+        "p50": 0.6,
+        "p95": 1.2,
+        "p99": 1.7,
+        "max": 2.2
+      },
+      "agents_connected": 200,
+      "connects": 200,
+      "connect_failures": 0,
+      "disconnects": 0,
+      "flaps": 0,
+      "anomalies": {
+        "fleet_outlier": 66,
+        "memory_leak_pattern": 2
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          },
+          "memory_leak": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          },
+          "disk_fill": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          },
+          "network_degradation": {
+            "hosts": 0,
+            "detected": 0,
+            "recall": null
+          }
+        },
+        "healthy_hosts": 200,
+        "healthy_flagged": 37,
+        "false_positive_rate": 0.185
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "pipeline_after_drain": {
+        "stream_length": 62743,
+        "groups": {
+          "detect": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 5
+          },
+          "persist": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 5
+          }
+        },
+        "dead_letters": 0,
+        "admission": {
+          "overloaded": false,
+          "persist_lag": 0,
+          "accepted": 25103,
+          "rejected": 0,
+          "max_lag": 50000
+        }
+      },
+      "generator_saturated": false,
+      "clock_skew_s": -0.0,
+      "stall_detected": false
+    }
+  ]
+}

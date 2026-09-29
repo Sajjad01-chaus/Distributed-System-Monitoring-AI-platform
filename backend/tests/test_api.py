@@ -114,3 +114,23 @@ def test_control_messages_are_relayed_not_stored(client, sync_redis):
 def test_commands_to_unconnected_agents_404(client):
     assert client.post("/api/v1/agents/ghost/remediate").status_code == 404
     assert client.get("/api/v1/metrics/nope/latest").status_code == 404
+
+
+def test_system_status_reports_real_fleet_numbers(client):
+    from datetime import datetime, timedelta, timezone
+
+    from app.database import SessionLocal
+    from app.models import Agent, Alert
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        db.add_all([Agent(agent_id="fresh-ok", status="healthy", last_seen=now),
+                    Agent(agent_id="fresh-sick", status="healthy", last_seen=now),
+                    Agent(agent_id="stale", status="healthy", last_seen=now - timedelta(hours=1)),
+                    Alert(alert_id="a1", agent_id="fresh-sick", alert_type="memory_leak_pattern",
+                          severity="high", status="active", occurrences=1, first_seen=now, last_seen=now),
+                    Alert(alert_id="a2", agent_id="stale", alert_type="disk_threshold_breach",
+                          severity="critical", status="active", occurrences=1, first_seen=now, last_seen=now)])
+        db.commit()
+    status = client.get("/api/v1/system/status").json()
+    assert (status["total_agents"], status["connected_agents"], status["healthy_agents"]) == (3, 2, 1)
+    assert status["active_alerts"] == 2 and status["anomalies_24h"] == 2

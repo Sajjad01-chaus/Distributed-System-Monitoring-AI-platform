@@ -244,3 +244,33 @@ async def test_detect_state_is_shared_so_any_worker_can_take_any_agent(redis_cli
     with SessionLocal() as db:
         kinds = set(db.scalars(select(Alert.alert_type)).all())
     assert "memory_leak_pattern" in kinds
+
+
+@pytest.mark.asyncio
+async def test_retire_leaves_group_only_when_nothing_is_owed(redis_client):
+    async def consumers():
+        return {c["name"] for c in await redis_client.xinfo_consumers(config.TELEMETRY_STREAM,
+                                                                      config.PERSIST_GROUP)}
+    await send(redis_client, sample(seq=1))
+    owing = PersistConsumer(redis_client, consumer_name="owing")
+    await owing.ensure_group()
+    await redis_client.xreadgroup(config.PERSIST_GROUP, "owing", {config.TELEMETRY_STREAM: ">"}, count=1)
+    assert not await owing.retire() and "owing" in await consumers()
+
+    clean = PersistConsumer(redis_client, consumer_name="clean")
+    await clean.run_once(block_ms=1)
+    assert await clean.retire() and "clean" not in await consumers()
+
+
+@pytest.mark.asyncio
+async def test_janitor_reaps_only_idle_consumers_that_owe_nothing(redis_client):
+    await send(redis_client, sample(seq=1))
+    owing = PersistConsumer(redis_client, consumer_name="owing")
+    await owing.ensure_group()
+    await redis_client.xreadgroup(config.PERSIST_GROUP, "owing", {config.TELEMETRY_STREAM: ">"}, count=1)
+    await redis_client.xreadgroup(config.PERSIST_GROUP, "empty", {config.TELEMETRY_STREAM: ">"}, count=1)
+
+    janitor = PersistConsumer(redis_client, consumer_name="janitor")
+    assert await janitor.reap_idle_consumers(max_idle_ms=0) == 1
+    names = {c["name"] for c in await redis_client.xinfo_consumers(config.TELEMETRY_STREAM, config.PERSIST_GROUP)}
+    assert "owing" in names and "empty" not in names

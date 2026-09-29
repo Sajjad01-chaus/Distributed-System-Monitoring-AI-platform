@@ -1,0 +1,148 @@
+{
+  "generated_at": "2026-09-29T12:05:35Z",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "cpu_count": 12
+  },
+  "args": {
+    "url": "ws://backend:8000",
+    "agents": "200",
+    "interval": 10.0,
+    "duration": 300.0,
+    "ramp_up": 10.0,
+    "drain": 30.0,
+    "cooldown": 180,
+    "mix": null,
+    "seed": "42",
+    "report": "/reports/phase2-detection.json",
+    "run_prefix": "p2det"
+  },
+  "stages": [
+    {
+      "run_id": "p2det7505des0n200",
+      "agents": 200,
+      "interval_s": 10.0,
+      "target_msgs_per_s": 20.0,
+      "send_window_s": 310.0,
+      "sent_unique": 6316,
+      "sent_frames": 6351,
+      "achieved_send_rate": 20.4,
+      "delivered_unique": 6316,
+      "delivered_rate": 20.4,
+      "delivery_ratio": 1.0,
+      "duplicates_sent": 35,
+      "duplicates_delivered": 0,
+      "reordered": 31,
+      "throttled": 0,
+      "server_errors": 0,
+      "persisted_rows": 6316,
+      "e2e_latency_ms": {
+        "count": 6316,
+        "p50": 10.4,
+        "p95": 18.1,
+        "p99": 39.9,
+        "max": 10957.2
+      },
+      "api_probe_ms": {
+        "count": 350,
+        "p50": 2.6,
+        "p95": 3.4,
+        "p99": 3.9,
+        "max": 31.6
+      },
+      "api_probe_errors": 0,
+      "send_call_ms": {
+        "count": 6351,
+        "p50": 0.2,
+        "p95": 0.4,
+        "p99": 0.5,
+        "max": 0.9
+      },
+      "sender_lag_ms": {
+        "count": 6318,
+        "p50": 0.7,
+        "p95": 1.7,
+        "p99": 2.2,
+        "max": 3.2
+      },
+      "generator_loop_lag_ms": {
+        "count": 3481,
+        "p50": 0.7,
+        "p95": 1.7,
+        "p99": 2.1,
+        "max": 2.9
+      },
+      "agents_connected": 200,
+      "connects": 347,
+      "connect_failures": 0,
+      "disconnects": 0,
+      "flaps": 148,
+      "anomalies": {
+        "cpu_threshold_breach": 15,
+        "fleet_outlier": 14,
+        "memory_leak_pattern": 12,
+        "disk_full_forecast": 8,
+        "network_latency_degradation": 9,
+        "memory_threshold_breach": 12,
+        "network_latency_high": 1
+      },
+      "detection_quality": {
+        "by_scenario": {
+          "cpu_spike": {
+            "hosts": 12,
+            "detected": 11,
+            "recall": 0.917
+          },
+          "memory_leak": {
+            "hosts": 12,
+            "detected": 12,
+            "recall": 1.0
+          },
+          "disk_fill": {
+            "hosts": 8,
+            "detected": 8,
+            "recall": 1.0
+          },
+          "network_degradation": {
+            "hosts": 8,
+            "detected": 8,
+            "recall": 1.0
+          }
+        },
+        "healthy_hosts": 160,
+        "healthy_flagged": 0,
+        "false_positive_rate": 0.0
+      },
+      "observer_connected": true,
+      "observer_errors": 0,
+      "pre_stage_cooldown_s": 3.0,
+      "pipeline_after_drain": {
+        "stream_length": 25039,
+        "groups": {
+          "detect": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 5
+          },
+          "persist": {
+            "lag": 0,
+            "pending": 0,
+            "consumers": 5
+          }
+        },
+        "dead_letters": 0,
+        "admission": {
+          "overloaded": false,
+          "persist_lag": 0,
+          "accepted": 6351,
+          "rejected": 0,
+          "max_lag": 50000
+        }
+      },
+      "generator_saturated": false,
+      "clock_skew_s": -0.0,
+      "stall_detected": false
+    }
+  ]
+}

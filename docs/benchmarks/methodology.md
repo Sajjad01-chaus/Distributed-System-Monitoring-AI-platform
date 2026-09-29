@@ -45,6 +45,10 @@ process. Nothing here is estimated; every table links to the JSON report it came
   for 435 s mid-stage; this check exists so that can never silently skew a number.)
 - Docker Desktop's VM clock drifts ~5% against the monotonic clock, so wall-clock-based rates can
   read up to ~5% low. Stall detection tolerates up to max(15 s, 10% of the stage window).
+- E2E latency is timed from when a message was *generated*. Out-of-order hosts deliberately hold a
+  message back for about one interval, so the maximum E2E latency in runs with that scenario is
+  the injected delay (~10 s at a 10 s interval), not backend latency. Use p99 or a `--mix` without
+  `out_of_order` when you want backend latency alone.
 - "Lost" means *not delivered within the drain window*. For an overloaded backend some of
   those messages are still queued and arrive later; `persisted_rows` at the end of the drain
   makes the gap visible.

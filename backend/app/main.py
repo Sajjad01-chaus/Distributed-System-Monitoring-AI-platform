@@ -6,18 +6,19 @@ worker processes (app.worker) that consume the Redis stream. See docs/architectu
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import RedisError
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from app import config
 from app.api import agents, alerts, metrics
 from app.api.utils.logger import setup_logger
 from app.database import SessionLocal
+from app.models import Agent, Alert
 from app.pipeline import streams
 from app.pipeline.hub import Admission, DashboardHub
 from app.pipeline.streams import AGENT_ID_RE, InvalidTelemetry
@@ -27,6 +28,8 @@ logger = setup_logger()
 # Close codes (RFC 6455 / IANA registry)
 WS_POLICY_VIOLATION = 1008
 WS_TRY_AGAIN_LATER = 1013
+# An agent that hasn't reported for this long isn't counted as connected (3x the default interval).
+AGENT_STALE_S = 90
 
 
 class AgentConnections:
@@ -224,11 +227,29 @@ async def pipeline_status():
 
 
 @app.get("/api/v1/system/status")
-async def system_status():
-    """Overall status as seen from this API replica"""
+def system_status():
+    """Fleet-wide status from the database (identical on every replica), plus this replica's
+    own connection counts. Sync handler: runs in the threadpool, off the event loop."""
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        total = db.scalar(select(func.count()).select_from(Agent))
+        reporting = db.scalar(select(func.count()).select_from(Agent)
+                              .where(Agent.last_seen >= now - timedelta(seconds=AGENT_STALE_S)))
+        active = db.scalar(select(func.count()).select_from(Alert).where(Alert.status == "active"))
+        live = select(Agent.agent_id).where(Agent.last_seen >= now - timedelta(seconds=AGENT_STALE_S))
+        unhealthy = db.scalar(select(func.count(func.distinct(Alert.agent_id)))
+                              .where(Alert.status == "active", Alert.severity.in_(("high", "critical")),
+                                     Alert.agent_id.in_(live)))   # silent agents aren't "unhealthy", just gone
+        last_24h = db.scalar(select(func.count()).select_from(Alert)
+                             .where(Alert.first_seen >= now - timedelta(hours=24)))
     return {
-        "connected_agents_this_replica": len(app.state.agents.sockets),
-        "active_dashboards_this_replica": len(app.state.hub.sockets),
-        "ingest_overloaded": app.state.admission.overloaded,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "total_agents": total,
+        "connected_agents": reporting,                       # reported within AGENT_STALE_S
+        "healthy_agents": max(reporting - unhealthy, 0),
+        "active_alerts": active,
+        "anomalies_24h": last_24h,
+        "system_health": "degraded" if app.state.admission.overloaded else "operational",
+        "this_replica": {"agent_sockets": len(app.state.agents.sockets),
+                         "dashboard_sockets": len(app.state.hub.sockets)},
+        "last_updated": now.isoformat(),
     }

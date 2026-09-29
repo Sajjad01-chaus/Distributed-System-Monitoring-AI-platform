@@ -27,6 +27,7 @@ async def main(kind: str) -> None:
             pass
     try:
         await consumer.run()
+        await consumer.retire()
     finally:
         await redis.aclose()
 
