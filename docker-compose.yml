@@ -12,6 +12,7 @@ x-backend: &backend
     VIEWER_USERNAME: ${VIEWER_USERNAME:-viewer}
     VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
     GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
+    METRICS_RETENTION_HOURS: ${METRICS_RETENTION_HOURS:-168}   # 7 days
   volumes:
     - ./backend/app:/app/app
 

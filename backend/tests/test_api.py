@@ -1,6 +1,7 @@
 """API behaviour: the agent socket only validates and enqueues; workers do the rest."""
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 import fakeredis
 import pytest
@@ -11,7 +12,8 @@ from app.main import app
 from app.pipeline import streams
 from app.pipeline.persist import PersistConsumer
 
-SAMPLE = {"agent_id": "agent-t1", "boot_id": "b1", "seq": 1, "timestamp": "2026-09-29T10:00:00+00:00",
+SAMPLE = {"agent_id": "agent-t1", "boot_id": "b1", "seq": 1,
+          "timestamp": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
           "cpu_usage": 42.5, "memory_usage": 61.0, "disk_usage": 70.0, "network_latency": 12.0}
 
 
@@ -82,6 +84,8 @@ def test_invalid_messages_are_rejected_at_the_edge(client, sync_redis, monkeypat
         assert "does not match" in agent.receive_json()["reason"]
         agent.send_json({**SAMPLE, "padding": "x" * 500})
         assert "exceeds" in agent.receive_json()["reason"]
+        agent.send_json({**SAMPLE, "timestamp": "2099-01-01T00:00:00+00:00"})
+        assert "check the agent's clock" in agent.receive_json()["reason"]
     assert stream_len(sync_redis) == 0
 
 

@@ -89,6 +89,18 @@ def validate_agent_message(agent_id: str, raw: str) -> Optional[Dict[str, Any]]:
     claimed = payload.get("agent_id", agent_id)
     if claimed != agent_id:
         raise InvalidTelemetry("agent_id in payload does not match the connection")
+    if "type" not in payload and "timestamp" in payload:
+        # Reject rather than rewrite: substituting the receive time for a bad clock would give
+        # each duplicate of a message a different timestamp, and the timestamp is part of the
+        # idempotency key. Telling the agent is also the only way its operator finds out.
+        try:
+            ts = datetime.fromisoformat(str(payload["timestamp"]))
+        except ValueError:
+            raise InvalidTelemetry("timestamp is not ISO-8601") from None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if abs(ts - datetime.now(timezone.utc)) > MAX_CLOCK_SKEW:
+            raise InvalidTelemetry("timestamp more than 24h from server time: check the agent's clock (UTC)")
     return payload
 
 

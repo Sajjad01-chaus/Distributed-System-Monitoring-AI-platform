@@ -21,7 +21,7 @@
                         DO NOTHING RETURNING                 detectors + fleet IsolationForest
                                   │                                   │                              │
                                   └──────────────► PostgreSQL + TimescaleDB ◄────────────────────────┘
-                                              system_metrics (hypertable, 7-day retention)
+                                              system_metrics (hypertable, app-run retention)
                                               alerts (one active per agent+type) · agents
 ```
 
@@ -77,7 +77,7 @@ sends them to a surviving replica.
 | Per-message model refit (~133 ms) and one global history | Per-agent statistical detectors (<1 ms); a fleet IsolationForest refit every 5 min, batch-scored | `detection/` |
 | Detector state in a worker would pin agents to workers | Windows and alert state live in Redis, so workers are stateless and any worker can take any agent | `pipeline/detect.py` |
 | Alerts piled up and flapped | Alerts open on transitions and resolve after N clear evaluations (hysteresis); one active alert per (agent, type) enforced by a partial unique index | `models/alerts.py` |
-| Raw telemetry grows without bound | TimescaleDB hypertable (1-day chunks) with a 7-day retention policy | `migrations/versions/0001_*` |
+| Raw telemetry grows without bound | TimescaleDB hypertable (1-day chunks); the liveness leader deletes samples older than `METRICS_RETENTION_HOURS` in batches, the same on any Postgres | `liveness.prune_old_metrics` |
 | `create_all()` at startup can't evolve a schema | Alembic migrations run as a one-shot `migrate` service; legacy tables are renamed, never dropped | `docker-compose.yml`, `migrations/` |
 | Workers deadlocking on concurrent agent upserts | Rows are upserted in sorted `agent_id` order, so locks are always taken in the same order | `persist._touch_agents` |
 
