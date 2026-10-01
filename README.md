@@ -34,7 +34,7 @@ monitor marks silent agents offline. **Why each piece exists: [docs/architecture
 | API | `backend/app/main.py` | Ingest → stream, admission control, presence + command routing, dashboard relay, JWT (`auth.py`), `/health` + `/ready` |
 | Workers | `backend/app/pipeline/`, `python -m app.worker persist\|detect\|liveness` | Reliable consumers: batching, XAUTOCLAIM recovery, DLQ, transient-error backoff; liveness with a Redis lease |
 | Detection | `backend/app/detection/` | Sustained thresholds, leak trend, disk-full forecast, latency degradation, fleet outliers; alert lifecycle with hysteresis |
-| Schema | `backend/migrations/` | Alembic; Timescale hypertable with 7-day retention; read-only Grafana role |
+| Schema | `backend/migrations/` | Alembic; Timescale hypertable (when available); app-run retention; read-only Grafana role |
 | Dashboard | `dashboard/` | Next.js (static export): live fleet stats, pipeline health, event feed, admin actions |
 | Grafana | `grafana/` | Provisioned as code on TimescaleDB: ingest rate, CPU/memory percentiles, alerts |
 | Simulator | `simulator/` | Synthetic fleet with fault injection, ground-truth scoring, command/failover measurement |
