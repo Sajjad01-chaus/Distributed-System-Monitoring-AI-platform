@@ -121,7 +121,12 @@ def upgrade() -> None:
         if available:
             op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
             op.execute("SELECT create_hypertable('system_metrics', 'ts', chunk_time_interval => INTERVAL '1 day')")
-            op.execute("SELECT add_retention_policy('system_metrics', INTERVAL '7 days')")
+            # Hosted Postgres (e.g. Render) often ships TimescaleDB's Apache-licensed edition:
+            # hypertables work, retention policies don't. There, set METRICS_RETENTION_HOURS and
+            # the liveness leader prunes old samples instead.
+            edition = bind.execute(sa.text("SELECT current_setting('timescaledb.license', true)")).scalar()
+            if edition != "apache":
+                op.execute("SELECT add_retention_policy('system_metrics', INTERVAL '7 days')")
 
 
 def downgrade() -> None:

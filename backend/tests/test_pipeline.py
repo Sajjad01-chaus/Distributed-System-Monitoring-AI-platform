@@ -16,8 +16,12 @@ from app.pipeline.streams import enqueue, parse_entry
 
 
 
+# Relative to now: the API rejects samples more than 24 h off, and fixed dates would age out.
+BASE_TS = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=1)
+
+
 def sample(seq=1, boot="boot-a", agent="agent-1", mem=40.0, **extra):
-    ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc) + timedelta(seconds=10 * seq)
+    ts = BASE_TS + timedelta(seconds=10 * seq)
     return {"agent_id": agent, "boot_id": boot, "seq": seq, "timestamp": ts.isoformat(),
             "cpu_usage": 10.0, "memory_usage": mem, "disk_usage": 20.0, "network_latency": 5.0,
             "platform": {"system": "Linux", "node": "host-1"}, **extra}
